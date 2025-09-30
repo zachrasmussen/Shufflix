@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>crunchyroll</string>
+		<string>youtube</string>
+		<string>paramountplus</string>
+		<string>peacock</string>
+		<string>max</string>
+		<string>hbomax</string>
+		<string>primevideo</string>
+		<string>disneyplus</string>
+		<string>hulu</string>
+		<string>nflx</string>
+	</array>
+	<key>TMDB_API_KEY</key>
+	<string>09056f9a3a0e4b0ecdef3ea2d8f20b33</string>
+</dict>
+</plist>
