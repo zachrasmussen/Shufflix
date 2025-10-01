@@ -28,6 +28,7 @@ private struct UserTitleWrite: Encodable {
   let skipped: Bool
   let seen: Bool
   let rating: Int?
+  let app_env: String          // <— env tag ("prod" | "staging")
 }
 
 final class SupabaseService {
@@ -51,7 +52,7 @@ final class SupabaseService {
 
   // MARK: - Writes (direct table upserts)
 
-  /// Upsert a user/title interaction.
+  /// Upsert a user/title interaction (env-aware).
   @discardableResult
   func upsertUserTitle(
     tmdbID: Int64,
@@ -70,13 +71,14 @@ final class SupabaseService {
       liked: liked ?? false,
       skipped: skipped ?? false,
       seen: seen ?? false,
-      rating: rating
+      rating: rating,
+      app_env: Constants.App.env
     )
 
-    // Conflict target: (user_id, tmdb_id, media)
+    // Conflict target: (user_id, tmdb_id, media, app_env)
     let response = try await db
       .from("user_titles")
-      .upsert(write, onConflict: "user_id,tmdb_id,media")
+      .upsert(write, onConflict: "user_id,tmdb_id,media,app_env")
       .execute()
 
     // Upsert returns an array; take the first row
@@ -92,7 +94,7 @@ final class SupabaseService {
     return t
   }
 
-  // MARK: - Reads
+  // MARK: - Reads (env-aware)
 
   /// Your List: liked = true, newest first
   func fetchLiked() async throws -> [UserTitle] {
@@ -100,6 +102,7 @@ final class SupabaseService {
       .from("user_titles")
       .select()
       .eq("liked", value: true)
+      .eq("app_env", value: Constants.App.env)               // <— filter by env
       .order("updated_at", ascending: false)
       .execute()
 
@@ -112,13 +115,15 @@ final class SupabaseService {
       .from("user_titles")
       .select()
       .gt("updated_at", value: isoTimestamp)
+      .eq("app_env", value: Constants.App.env)               // <— filter by env
       .order("updated_at", ascending: true)
       .execute()
 
     return try decoder.decode([UserTitle].self, from: res.data)
   }
 
-  /// Fetch cached titles by tmdb_id list (hydrates UI names/posters). Filters by ids; we filter media client-side.
+  /// Fetch cached titles by tmdb_id list (hydrates UI names/posters).
+  /// If you later env-tag `titles`, add `.eq("app_env", value: Constants.App.env)` here too.
   func fetchTitleCache(ids: [(Int64, String)]) async throws -> [TitleCache] {
     guard !ids.isEmpty else { return [] }
 

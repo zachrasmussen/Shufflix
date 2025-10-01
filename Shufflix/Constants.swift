@@ -9,6 +9,36 @@ import Foundation
 
 enum Constants {
 
+    // MARK: - App (env tag for a single Supabase project)
+    /// Reads `APP_ENV` from Info.plist and normalizes it to "prod" or "staging".
+    /// Use this to tag DB rows (e.g., `app_env = Constants.App.env`) and to filter reads.
+    enum App {
+        /// Raw value from Info.plist (lowercased, trimmed). Defaults to "prod" if missing/invalid.
+        private static let raw: String = {
+            let plistValue = Bundle.main.object(forInfoDictionaryKey: "APP_ENV") as? String
+            let envOverride = ProcessInfo.processInfo.environment["APP_ENV"]
+            let raw = (envOverride?.isEmpty == false ? envOverride : plistValue)?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return raw
+        }()
+
+        /// Normalized environment tag you should persist to the DB.
+        static let env: String = {
+            switch raw {
+            case "staging": return "staging"
+            case "prod", "production": return "prod"
+            default:
+                #if DEBUG
+                print("⚠️ APP_ENV '\(raw)' not recognized. Defaulting to 'prod'.")
+                #endif
+                return "prod"
+            }
+        }()
+
+        static var isStaging: Bool { env == "staging" }
+        static var isProd: Bool    { env == "prod" }
+    }
+
     // MARK: - Supabase
     enum Supabase {
         /// Project base URL (e.g., https://xyzcompany.supabase.co).

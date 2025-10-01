@@ -2,26 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>crunchyroll</string>
-		<string>youtube</string>
-		<string>paramountplus</string>
-		<string>peacock</string>
-		<string>max</string>
-		<string>hbomax</string>
-		<string>primevideo</string>
-		<string>disneyplus</string>
-		<string>hulu</string>
-		<string>nflx</string>
-	</array>
+	<key>SUPABASE_URL</key>
+	<string>$(SUPABASE_URL)</string>
 	<key>SUPABASE_ANON_KEY</key>
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ</string>
-	<key>SUPABASE_URL</key>
-	<string>https://qoixoyneimnudkbowmlh.supabase.co</string>
+	<key>CFBundleDisplayName</key>
+	<string>Shufflix (Staging)</string>
 	<key>TMDB_API_KEY</key>
 	<string>09056f9a3a0e4b0ecdef3ea2d8f20b33</string>
 	<key>APP_ENV</key>
-	<string>prod</string>
+	<string>staging</string>
 </dict>
 </plist>
