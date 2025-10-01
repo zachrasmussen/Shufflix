@@ -3,7 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//Updated 9/27 - 7:45
+//
 
 import SwiftUI
 import Combine
@@ -16,7 +16,9 @@ struct ShufflixApp: App {
 
     // Prevent duplicate work if the system rapidly flips phases
     @State private var lastHandledPhase: ScenePhase?
-    @State private var cancellables = Set<AnyCancellable>()
+
+    // Use your standalone Supabase sync manager
+    private let syncer = SupabaseSyncManager()
 
     var body: some Scene {
         WindowGroup {
@@ -27,8 +29,13 @@ struct ShufflixApp: App {
                 .task {
                     _ = Haptics.shared
                     Haptics.shared.prewarm()
-                    // Optional: nudge down spam during drags; set to 0 if you prefer current feel.
+                    // Optional: throttle gestures slightly if desired
                     Haptics.shared.minInterval = 0.0
+                }
+
+                // Initial delta pull on cold start
+                .task {
+                    await syncer.pullServerDeltas(mergeInto: vm)
                 }
 
                 // ScenePhase-driven maintenance with re-entry guards
@@ -43,8 +50,12 @@ struct ShufflixApp: App {
                         if vm.currentDeck().count < 6 && !vm.isLoading {
                             await vm.loadMore()
                         }
+                        // Pull any server updates since last time
+                        await syncer.pullServerDeltas(mergeInto: vm)
+
                     case .inactive, .background:
                         vm.flush() // flush debounced writes
+
                     @unknown default:
                         break
                     }

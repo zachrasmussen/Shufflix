@@ -3,9 +3,10 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//Updated 9/27 - 7:45
+//
 
 import Foundation
+import PostgREST   // for AnyJSON (jsonb)
 
 // MARK: - Media
 
@@ -45,7 +46,7 @@ struct ProviderLink: Hashable, Codable {
     let logoURL: URL?
 }
 
-// MARK: - Titles
+// MARK: - Titles (UI-facing)
 
 struct TitleItem: Identifiable, Hashable, Codable {
     let id: Int
@@ -90,7 +91,7 @@ enum StarRating: Int, Codable, CaseIterable {
     }
 }
 
-// MARK: - Persistence Snapshot
+// MARK: - Persistence Snapshot (local JSON)
 
 /// Lightweight persistence form of TitleItem (Codable).
 struct StoredTitle: Codable, Hashable {
@@ -107,7 +108,7 @@ struct StoredTitle: Codable, Hashable {
     let providers: [ProviderLink]?
 }
 
-// MARK: - Conversions
+// MARK: - Conversions (UI <-> Persistence)
 
 extension TitleItem {
     var stored: StoredTitle {
@@ -140,5 +141,77 @@ extension StoredTitle {
             tmdbRating: tmdbRating,
             tmdbVoteCount: tmdbVoteCount
         )
+    }
+}
+
+// =====================================================================
+// MARK: - Supabase Rows (DB-facing models)
+// =====================================================================
+
+/// Mirrors `public.titles` (cache) for decoding/encoding via Supabase.
+struct TitleCache: Codable, Identifiable, Hashable {
+    // Convenience ID to use in SwiftUI lists
+    var id: String { "\(tmdb_id)-\(media)" }
+
+    let tmdb_id: Int64
+    let media: String            // "movie" | "tv" (map to MediaType with .fromLoose)
+
+    let name: String?
+    let poster_path: String?
+    let release_date: String?    // YYYY-MM-DD
+    let popularity: Double?
+    let certification: String?
+    let runtime_min: Int?
+    let seasons: Int?
+    let providers: AnyJSON?      // jsonb
+}
+
+/// Mirrors `public.user_titles` for RLS-backed reads/writes.
+struct UserTitle: Codable, Identifiable, Hashable {
+    let id: UUID?
+    let user_id: UUID?
+    let tmdb_id: Int64
+    let media: String            // "movie" | "tv"
+
+    var liked: Bool
+    var skipped: Bool
+    var seen: Bool
+    var rating: Int?
+    let notes: String?
+
+    let created_at: String?
+    let updated_at: String?
+
+    // Helpers
+    var key: String { "\(tmdb_id)-\(media)" }
+    var mediaType: MediaType { MediaType.fromLoose(media) }
+    var hasAnyAction: Bool { liked || skipped || seen || rating != nil }
+}
+
+// MARK: - Conversions (DB -> UI/Persistence)
+
+extension TitleCache {
+    /// Build a minimal `StoredTitle` snapshot (so lists can render offline quickly).
+    /// Note: We keep providers nil here unless you later define a decoding schema for the jsonb.
+    var asStoredTitle: StoredTitle {
+        let poster = Constants.imageURL(path: poster_path, size: .posterDefault)?.absoluteString
+        return StoredTitle(
+            id: Int(tmdb_id),
+            mediaType: MediaType.fromLoose(media).rawValue,
+            name: name ?? "",
+            year: TitleCache.yearString(from: release_date) ?? "",
+            posterURLString: poster,
+            genres: [],                 // You can hydrate with TMDB detail if needed
+            overview: nil,
+            tmdbRating: popularity,     // Not a rating, but gives you something to show if desired
+            tmdbVoteCount: nil,
+            providers: nil
+        )
+    }
+
+    /// Handy parser to extract a 4-digit year from "YYYY-MM-DD".
+    static func yearString(from isoDate: String?) -> String? {
+        guard let iso = isoDate, iso.count >= 4 else { return nil }
+        return String(iso.prefix(4))
     }
 }

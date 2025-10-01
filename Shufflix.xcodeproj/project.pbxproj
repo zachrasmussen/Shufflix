@@ -285,6 +285,7 @@
 			baseConfigurationReferenceAnchor = AB4815992E8C1D6D0030F010 /* Shufflix */;
 			baseConfigurationReferenceRelativePath = Config/Prod.Debug.xcconfig;
 			buildSettings = {
+				APP_DISPLAY_NAME = com.shufflix.app;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Shufflix/Shufflix.entitlements;
@@ -305,10 +306,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.shufflix.app-Prod";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.shufflix.app;
+				PRODUCT_NAME = Shufflix;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ";
+				SUPABASE_ANON_KEY = "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ\"";
 				SUPABASE_URL = "https://qoixoyneimnudkbowmlh.supabase.co";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -324,6 +325,7 @@
 			baseConfigurationReferenceAnchor = AB4815992E8C1D6D0030F010 /* Shufflix */;
 			baseConfigurationReferenceRelativePath = Config/Prod.Release.xcconfig;
 			buildSettings = {
+				APP_DISPLAY_NAME = com.shufflix.app;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Shufflix/Shufflix.entitlements;
@@ -344,10 +346,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.shufflix.app-Prod";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.shufflix.app;
+				PRODUCT_NAME = com.shufflix.app;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ";
+				SUPABASE_ANON_KEY = "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ\"";
 				SUPABASE_URL = "https://qoixoyneimnudkbowmlh.supabase.co";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -429,6 +431,7 @@
 			baseConfigurationReferenceAnchor = AB4815992E8C1D6D0030F010 /* Shufflix */;
 			baseConfigurationReferenceRelativePath = Config/Staging.Debug.xcconfig;
 			buildSettings = {
+				APP_DISPLAY_NAME = com.shufflix.app.staging;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Shufflix/Shufflix.entitlements;
@@ -449,10 +452,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.shufflix.app-Staging";
-				PRODUCT_NAME = "Shufflix-Staging";
+				PRODUCT_BUNDLE_IDENTIFIER = com.shufflix.app.staging;
+				PRODUCT_NAME = com.shufflix.app.staging;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ";
+				SUPABASE_ANON_KEY = "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ\"";
 				SUPABASE_URL = "https://qoixoyneimnudkbowmlh.supabase.co";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -527,6 +530,7 @@
 			baseConfigurationReferenceAnchor = AB4815992E8C1D6D0030F010 /* Shufflix */;
 			baseConfigurationReferenceRelativePath = "Config/ Staging.Release.xcconfig";
 			buildSettings = {
+				APP_DISPLAY_NAME = com.shufflix.app.staging;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Shufflix/Shufflix.entitlements;
@@ -547,10 +551,10 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.shufflix.app-Staging";
-				PRODUCT_NAME = "Shufflix-Staging";
+				PRODUCT_BUNDLE_IDENTIFIER = com.shufflix.app.staging;
+				PRODUCT_NAME = com.shufflix.app.staging;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ";
+				SUPABASE_ANON_KEY = "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ\"";
 				SUPABASE_URL = "https://qoixoyneimnudkbowmlh.supabase.co";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;

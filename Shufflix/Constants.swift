@@ -3,11 +3,49 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/24/25.
-//Updated 9/30 - 8:30
+//
 
 import Foundation
 
 enum Constants {
+
+    // MARK: - Supabase
+    enum Supabase {
+        /// Project base URL (e.g., https://xyzcompany.supabase.co).
+        /// Read from Info.plist `SUPABASE_URL`. Allows an env override for tests.
+        static let url: String = {
+            let plistValue = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String
+            let envOverride = ProcessInfo.processInfo.environment["SUPABASE_URL"]
+            let raw = (envOverride?.isEmpty == false ? envOverride : plistValue)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            guard !raw.isEmpty else {
+                #if DEBUG
+                fatalError("❌ Missing SUPABASE_URL in Info.plist (or env). Set it per scheme.")
+                #else
+                return "" // release: fail gracefully; client init will guard against empty URL
+                #endif
+            }
+            return raw
+        }()
+
+        /// Anonymous public key. Read from Info.plist `SUPABASE_ANON_KEY`.
+        static let anonKey: String = {
+            let plistValue = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as? String
+            let envOverride = ProcessInfo.processInfo.environment["SUPABASE_ANON_KEY"]
+            let raw = (envOverride?.isEmpty == false ? envOverride : plistValue)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            guard !raw.isEmpty else {
+                #if DEBUG
+                fatalError("❌ Missing SUPABASE_ANON_KEY in Info.plist (or env). Set it per scheme.")
+                #else
+                return "" // release: fail gracefully; network calls will no-op if misconfigured
+                #endif
+            }
+            return raw
+        }()
+    }
 
     // MARK: - TMDB
     enum TMDB {
@@ -21,7 +59,8 @@ enum Constants {
             // Prefer Info.plist; allow an env override for unit/UI tests if present.
             let plistValue = Bundle.main.object(forInfoDictionaryKey: "TMDB_API_KEY") as? String
             let envOverride = ProcessInfo.processInfo.environment["TMDB_API_KEY"]
-            let raw = (envOverride?.isEmpty == false ? envOverride : plistValue)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let raw = (envOverride?.isEmpty == false ? envOverride : plistValue)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
             guard !raw.isEmpty else {
                 #if DEBUG
@@ -36,11 +75,9 @@ enum Constants {
         /// Default language in BCP-47 (e.g., "en-US").
         /// Uses the first preferred language if valid; else synthesizes from current Locale; falls back to "en-US".
         static let defaultLanguage: String = {
-            // Try the user’s preferred (already BCP-47)
             if let first = Locale.preferredLanguages.first, !first.isEmpty {
                 return normalizeBCP47(first)
             }
-            // Synthesize from current locale
             let loc = Locale.current
             let lang = loc.language.languageCode?.identifier ?? "en"
             let region = loc.region?.identifier ?? "US"
@@ -54,11 +91,8 @@ enum Constants {
 
         /// Normalizes odd forms like "en_US" → "en-US". Keeps it simple (no script subtags).
         private static func normalizeBCP47(_ tag: String) -> String {
-            // If it already contains a dash, assume fine.
             if tag.contains("-") { return tag }
-            // Convert common underscore form.
             if tag.contains("_") { return tag.replacingOccurrences(of: "_", with: "-") }
-            // Bare language (e.g., "en") → add region if available, else "en-US"
             let lang = tag
             let region = Locale.current.region?.identifier ?? "US"
             return "\(lang)-\(region)"

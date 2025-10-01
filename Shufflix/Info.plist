@@ -16,7 +16,7 @@
 		<string>nflx</string>
 	</array>
 	<key>SUPABASE_ANON_KEY</key>
-	<string>SUPABASE_ANON_KEY</string>
+	<string>$(SUPABASE_ANON_KEY)</string>
 	<key>SUPABASE_URL</key>
 	<string>$(SUPABASE_URL)</string>
 	<key>TMDB_API_KEY</key>
