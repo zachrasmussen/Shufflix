@@ -1,0 +1,18 @@
+//
+//  Prod.Debug.xcconfig
+//  Shufflix
+//
+//  Created by Zach Rasmussen on 9/30/25.
+//
+
+// Configuration settings file format documentation can be found at:
+// https://developer.apple.com/documentation/xcode/adding-a-build-configuration-file-to-your-project
+
+// Supabase (PRODUCTION)
+SUPABASE_URL = https://YOUR-PROD-PROJECT.supabase.co
+SUPABASE_ANON_KEY = YOUR_PROD_ANON_KEY
+
+PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.quickflix
+APP_DISPLAY_NAME = QuickFlix
+
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG

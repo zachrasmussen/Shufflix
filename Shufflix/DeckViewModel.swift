@@ -3,8 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Updated 9/28 - 7:45
-//
+//Updated 9/30 - 8:30
 
 import Foundation
 import SwiftUI

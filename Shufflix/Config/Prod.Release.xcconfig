@@ -1,0 +1,12 @@
+//
+//  Prod.Release.xcconfig
+//  Shufflix
+//
+//  Created by Zach Rasmussen on 9/30/25.
+//
+
+// Configuration settings file format documentation can be found at:
+// https://developer.apple.com/documentation/xcode/adding-a-build-configuration-file-to-your-project
+
+#include "Prod.Debug.xcconfig"
+SWIFT_ACTIVE_COMPILATION_CONDITIONS =

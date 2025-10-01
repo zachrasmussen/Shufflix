@@ -1,0 +1,22 @@
+//
+//  Staging.Debug.xcconfig
+//  Shufflix
+//
+//  Created by Zach Rasmussen on 9/30/25.
+//
+
+// Configuration settings file format documentation can be found at:
+// https://developer.apple.com/documentation/xcode/adding-a-build-configuration-file-to-your-project
+
+// Supabase (STAGING)
+SUPABASE_URL = "https://qoixoyneimnudkbowmlh.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvaXhveW5laW1udWRrYm93bWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkxNzk3OTAsImV4cCI6MjA3NDc1NTc5MH0.DApIj2oMuiOTaphA6tPvUbI-1yzUA-QfjsV5EMNS8IQ"
+
+// Bundle ID suffix for staging builds
+PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.quickflix.staging
+APP_DISPLAY_NAME = QuickFlix (Staging)
+
+// Optional flags
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG STAGING
+
+

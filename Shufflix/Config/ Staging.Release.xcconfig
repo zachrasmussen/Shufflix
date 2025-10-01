@@ -1,0 +1,13 @@
+//
+//   Staging.Release.xcconfig
+//  Shufflix
+//
+//  Created by Zach Rasmussen on 9/30/25.
+//
+
+// Configuration settings file format documentation can be found at:
+// https://developer.apple.com/documentation/xcode/adding-a-build-configuration-file-to-your-project
+
+#include "Staging.Debug.xcconfig"
+// Release-only overrides:
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = STAGING

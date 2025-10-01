@@ -15,6 +15,10 @@
 		<string>hulu</string>
 		<string>nflx</string>
 	</array>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>SUPABASE_ANON_KEY</string>
+	<key>SUPABASE_URL</key>
+	<string>$(SUPABASE_URL)</string>
 	<key>TMDB_API_KEY</key>
 	<string>09056f9a3a0e4b0ecdef3ea2d8f20b33</string>
 </dict>
