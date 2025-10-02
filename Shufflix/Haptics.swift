@@ -1,34 +1,45 @@
 //
-//  Heptics.swift
+//  Haptics.swift
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//Updated 9/27 - 7:45
+//  Refactored: 2025-10-02
+//
 
 import UIKit
 import CoreHaptics
 
+/// Centralized, lightweight haptics manager.
+/// - `@MainActor` so UIKit generators are always touched on the main thread.
+/// - Reuses generators to minimize allocation/latency.
+/// - Optional per-channel throttling to avoid spam during rapid gestures.
 @MainActor
 final class Haptics {
+
+    // MARK: Singleton
     static let shared = Haptics()
 
-    // MARK: - Config
+    // MARK: Config
     /// Toggle all haptics globally (e.g., user setting).
     var isEnabled: Bool = true
 
-    /// Minimal interval between repeated triggers for the same “channel”.
-    /// Set to >0 (e.g., 0.08) to lightly throttle spammy gestures.
+    /// Minimal interval between repeated triggers for the same channel.
+    /// Example: `0.08` to throttle during drags.
     var minInterval: TimeInterval = 0
 
-    // MARK: - Internals
+    // MARK: Internals
+
+    /// Hardware capability; false on simulators and devices without Taptic Engine.
     private let supportsHaptics: Bool
-    private var lastFire: [Channel: TimeInterval] = [:]
 
     private enum Channel: Hashable {
         case light, medium, heavy, success, warning, error, selection, soft, rigid
     }
 
-    // Generators (reused)
+    /// Last-fire timestamp per channel (for throttling).
+    private var lastFire: [Channel: TimeInterval] = [:]
+
+    // Reused generators
     private let impactLight  = UIImpactFeedbackGenerator(style: .light)
     private let impactMedium = UIImpactFeedbackGenerator(style: .medium)
     private let impactHeavy  = UIImpactFeedbackGenerator(style: .heavy)
@@ -36,17 +47,23 @@ final class Haptics {
     private let selection    = UISelectionFeedbackGenerator()
 
     private init() {
-        // Simulator reports false; devices with no Taptic Engine also false.
+        #if targetEnvironment(simulator)
+        // Simulators don’t have haptics hardware; keep it false so we skip work.
+        self.supportsHaptics = false
+        #else
         if #available(iOS 13.0, *) {
-            supportsHaptics = CHHapticEngine.capabilitiesForHardware().supportsHaptics
+            self.supportsHaptics = CHHapticEngine.capabilitiesForHardware().supportsHaptics
         } else {
-            supportsHaptics = true // older devices either no-op or still provide basic feedback
+            // Pre-iOS 13: older devices either no-op or very limited vibration feedback.
+            // Treat as unsupported to avoid unnecessary work.
+            self.supportsHaptics = false
         }
-        // Pre-warm a little so the first interaction feels instant.
+        #endif
+
         prepareAll()
     }
 
-    // MARK: - Public (call sites unchanged)
+    // MARK: Public API (unchanged call sites)
 
     // Impact
     func light()  { fire(.light)  { impactLight.impactOccurred() } }
@@ -61,7 +78,7 @@ final class Haptics {
     // Selection
     func selectionChanged() { fire(.selection) { selection.selectionChanged() } }
 
-    // iOS 13+: extra flavors some teams like to use
+    // iOS 13+: additional impact styles
     func soft() {
         if #available(iOS 13.0, *) {
             let g = UIImpactFeedbackGenerator(style: .soft)
@@ -80,13 +97,31 @@ final class Haptics {
         }
     }
 
-    /// Call once early (e.g., in App init/`onAppear`) to reduce first-tap latency.
+    /// Call once early (e.g., in App init / first scene onAppear) to reduce first-tap latency.
     func prewarm() { prepareAll() }
 
-    // MARK: - Private
+    // Extra: a single entrypoint if you ever want to map UI events to styles
+    enum Ping {
+        case light, medium, heavy, success, warning, error, selection, soft, rigid
+    }
+    func ping(_ kind: Ping) {
+        switch kind {
+        case .light: light()
+        case .medium: impact()
+        case .heavy: heavy()
+        case .success: success()
+        case .warning: warning()
+        case .error: error()
+        case .selection: selectionChanged()
+        case .soft: soft()
+        case .rigid: rigid()
+        }
+    }
+
+    // MARK: Private
 
     private func prepareAll() {
-        guard supportsHaptics, isEnabled else { return }
+        guard isEnabled, supportsHaptics else { return }
         impactLight.prepare()
         impactMedium.prepare()
         impactHeavy.prepare()
@@ -97,14 +132,14 @@ final class Haptics {
     private func fire(_ channel: Channel, action: () -> Void) {
         guard isEnabled, supportsHaptics else { return }
 
-        // Optional micro-throttle to avoid engine spam (useful during drag thresholds).
+        // Optional micro-throttle to avoid spamming the engine.
         if minInterval > 0 {
             let now = CACurrentMediaTime()
             if let last = lastFire[channel], now - last < minInterval { return }
             lastFire[channel] = now
         }
 
-        // Generators work best when prepared shortly before use.
+        // Generators feel snappiest when prepared just before use.
         switch channel {
         case .light:    impactLight.prepare()
         case .medium:   impactMedium.prepare()

@@ -3,7 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//
+//Updated 10/2 - 8:00
 
 import Foundation
 import Supabase

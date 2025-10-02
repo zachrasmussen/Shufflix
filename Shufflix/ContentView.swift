@@ -2,49 +2,22 @@
 //  ContentView.swift
 //  Shufflix
 //
-//  Created by Zach Rasmussen on 9/24/25.
-//Updated 9/30 - 8:30
+//  Created by Zach Rasmussen on 9/30/25.
+//  Refactored: 2025-10-02
+//
 
 import SwiftUI
 import Supabase
 
-struct ContentView: View {
-    @State private var isSignedIn = false
+// MARK: - Root Deck View
 
-    var body: some View {
-        Group {
-            if isSignedIn {
-                DeckRootView()   // your original UI, unchanged
-            } else {
-                SignInView()     // the SIWA screen you added earlier
-            }
-        }
-        .task {
-            // Listen for Supabase auth state changes and update UI.
-            for await (event, session) in Supa.client.auth.authStateChanges {
-                switch event {
-                case .initialSession, .signedIn, .tokenRefreshed, .userUpdated:
-                    isSignedIn = (session != nil)
-                case .signedOut, .userDeleted:
-                    isSignedIn = false
-                default:
-                    break
-                }
-            }
-        }
-    }
-}
-
-//
-// MARK: - Your original deck UI, moved into DeckRootView with 0 functional changes
-//
-
-private struct DeckRootView: View {
+struct DeckRootView: View {
     @EnvironmentObject private var vm: DeckViewModel
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var selected: TitleItem?
     @State private var showFilters = false
+    @State private var showSettings = false
     @State private var didPrimeDeck = false   // ensure one-time initial top-up
 
     var body: some View {
@@ -57,12 +30,12 @@ private struct DeckRootView: View {
                 ZStack {
                     Color(UIColor.systemBackground).ignoresSafeArea()
 
-                    // 1) Quiet shell while NOT primed (no spinner to avoid flicker)
+                    // 1) Quiet shell while NOT primed (avoid flicker)
                     if !vm.isPrimed && vm.currentDeck().isEmpty {
                         VStack { Spacer(minLength: 0) }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // 2) Error state (only if still empty after attempts)
+                    // 2) Error state
                     } else if let err = vm.errorMessage, vm.currentDeck().isEmpty {
                         VStack(spacing: 12) {
                             Text("Oops: \(err)")
@@ -97,7 +70,6 @@ private struct DeckRootView: View {
 
                             Spacer(minLength: 0)
                         }
-                        // Fade the deck in once we’re primed to soften the reveal
                         .opacity(vm.isPrimed ? 1 : 0)
                         .animation(.easeOut(duration: 0.15), value: vm.isPrimed)
                     }
@@ -154,23 +126,32 @@ private struct DeckRootView: View {
                     .accessibilityLabel("Liked")
                 }
             }
+            // Filters Sheet
             .sheet(isPresented: $showFilters) {
-                FilterSheet()
-                    .presentationDetents([.medium, .large])
+                FilterSheet(onOpenSettings: {
+                    showFilters = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        showSettings = true
+                    }
+                })
+                .environmentObject(vm)
+                .presentationDetents([.medium, .large])
+                .presentationCornerRadius(20)
+            }
+            // Full-screen Settings
+            .fullScreenCover(isPresented: $showSettings) {
+                SettingsView(onClose: { showSettings = false })
             }
             .navigationDestination(item: $selected) { item in
                 TitleDetailView(item: item)
             }
-            // Pull-to-refresh → async wrapper (no direct method refs)
             .refreshable { await reloadMoreAsync() }
-            // One-time prime on appear
             .onAppear {
                 if !didPrimeDeck {
                     didPrimeDeck = true
                     primeDeckIfNeeded()
                 }
             }
-            // Persist on background
             .onChange(of: scenePhase) { phase in
                 if phase == .background { vm.flush() }
             }
@@ -179,7 +160,6 @@ private struct DeckRootView: View {
 
     // MARK: - Async wrappers
 
-    /// Initial top-up without ever touching a non-existent vm.load()
     private func primeDeckIfNeeded() {
         if vm.currentDeck().count < 6 {
             Task { await vm.loadMore() }
@@ -195,7 +175,7 @@ private struct DeckRootView: View {
     }
 }
 
-// MARK: - Deck
+// MARK: - DeckStack
 
 struct DeckStack: View {
     let items: [TitleItem]
@@ -221,7 +201,7 @@ struct DeckStack: View {
     }
 }
 
-// MARK: - Card
+// MARK: - SwipeCard
 
 struct SwipeCard: View {
     let item: TitleItem
@@ -357,6 +337,8 @@ struct SwipeCard: View {
     }
 }
 
+// MARK: - TagBadge
+
 struct TagBadge: View {
     let text: String
     let tint: Color
@@ -368,5 +350,69 @@ struct TagBadge: View {
             .overlay(Capsule().stroke(tint, lineWidth: 3))
             .foregroundColor(tint)
             .shadow(radius: 3, y: 2)
+    }
+}
+
+// MARK: - Root App ContentView
+
+struct ContentView: View {
+    @EnvironmentObject private var vm: DeckViewModel
+    @Environment(\.scenePhase) private var scenePhase
+
+    @State private var isSignedIn = false
+    @State private var authTask: Task<Void, Never>?
+
+    var body: some View {
+        Group {
+            if isSignedIn {
+                DeckRootView()
+            } else {
+                SignInView()
+            }
+        }
+        .task {
+            // Debug prints: confirm which user/env you’re running with
+            let uid = Supa.client.auth.currentUser?.id.uuidString ?? "nil"
+            print("AUTH uid:", uid)
+            print("APP env:", Constants.App.env)
+
+            // Initial session snapshot
+            isSignedIn = (Supa.client.auth.currentUser != nil)
+
+            // If already signed in at launch, do a silent liked sync
+            if isSignedIn {
+                await vm.refreshLikedFromSupabase()
+                await vm.hydrateLikedCacheFromSupabase()
+            }
+
+            // Stream auth state changes and keep UI + liked list in sync
+            authTask?.cancel()
+            authTask = Task {
+                for await (event, session) in Supa.client.auth.authStateChanges {
+                    switch event {
+                    case .initialSession, .signedIn, .tokenRefreshed, .userUpdated:
+                        isSignedIn = (session != nil)
+                        if isSignedIn {
+                            await vm.refreshLikedFromSupabase()
+                            await vm.hydrateLikedCacheFromSupabase()
+                        }
+                    case .signedOut, .userDeleted:
+                        isSignedIn = false
+                    default:
+                        break
+                    }
+                }
+            }
+        }
+        .onChange(of: scenePhase) { phase in
+            // When returning to foreground, refresh liked + cache silently
+            if phase == .active, isSignedIn {
+                Task {
+                    await vm.refreshLikedFromSupabase()
+                    await vm.hydrateLikedCacheFromSupabase()
+                }
+            }
+        }
+        .onDisappear { authTask?.cancel() }
     }
 }

@@ -3,7 +3,8 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//Updated 9/27 - 7:45
+//  Restored: 2025-10-02 (static API with internal actor cache)
+//
 
 import Foundation
 
@@ -79,7 +80,7 @@ enum TMDBService {
         let url = components(path, query).url!
 
         var lastError: Error?
-        for attempt in 0..<2 {
+        for _ in 0..<2 {
             do {
                 var req = URLRequest(url: url)
                 req.httpMethod = "GET"

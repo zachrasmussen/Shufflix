@@ -3,8 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Updated 9/28 - 7:45
-//
+//  Updated 10/2 — single .task: fetch → backfill → hydrate from Supabase
 
 import SwiftUI
 
@@ -208,6 +207,22 @@ struct LikedListView: View {
         }
         .navigationTitle("Liked")
         .toolbar { trailingSortToolbar() }
+        // Single task: fetch from Supabase → backfill any local-only likes → hydrate metadata
+        .task {
+            await vm.refreshLikedFromSupabase()
+
+            // Backfill: push local likes that Supabase doesn't know about yet
+            let remote = vm.likedFromRemote // non-optional
+            let remoteSet = Set(remote.map { "\($0.tmdb_id)-\($0.media)" })
+            for item in vm.liked {
+                let key = "\(item.id)-\(item.mediaType.rawValue)"
+                if !remoteSet.contains(key) {
+                    vm.like(tmdbID: Int64(item.id), media: item.mediaType.rawValue)
+                }
+            }
+
+            await vm.hydrateLikedCacheFromSupabase()
+        }
         // Dialogs
         .showDialog(isPresented: $showShowDialog, title: "Show") {
             Button("All")    { mediaTypeRaw = MediaTypeFilter.all.rawValue }

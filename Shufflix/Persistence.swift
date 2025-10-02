@@ -3,7 +3,8 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//Updated 9/27 - 8:40
+//  Refactored: 2025-10-02
+//
 
 import Foundation
 
@@ -20,7 +21,7 @@ struct UserLibrary: Codable, Equatable {
     /// tmdbId : 1..5
     var ratings: [Int: Int]
 
-    /// NEW: Last-known deck snapshot for instant launch (option #1).
+    /// Last-known deck snapshot for instant launch.
     var deckSnapshot: [StoredTitle]
 
     // for future sync/conflict resolution
@@ -45,6 +46,41 @@ struct UserLibrary: Codable, Equatable {
         self.deckSnapshot = deckSnapshot
         self.updatedAt   = updatedAt
         self.version     = version
+    }
+
+    // Robust decoding with defaults (future/backward compatible)
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.seenIDs      = try c.decodeIfPresent(Set<Int>.self, forKey: .seenIDs) ?? []
+        self.skippedIDs   = try c.decodeIfPresent(Set<Int>.self, forKey: .skippedIDs) ?? []
+        self.likedIDs     = try c.decodeIfPresent(Set<Int>.self, forKey: .likedIDs) ?? []
+        self.liked        = try c.decodeIfPresent([StoredTitle].self, forKey: .liked) ?? []
+        self.ratings      = try c.decodeIfPresent([Int: Int].self, forKey: .ratings) ?? [:]
+        self.deckSnapshot = try c.decodeIfPresent([StoredTitle].self, forKey: .deckSnapshot) ?? []
+        self.updatedAt    = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        self.version      = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
+
+        UserLibrary.repair(&self) // small auto-fixes on load
+    }
+
+    // Auto-repairs for minor corruption/drift
+    private static func repair(_ model: inout UserLibrary) {
+        // 1) Deduplicate liked snapshots by id, preserve order (first wins)
+        var seen = Set<Int>()
+        model.liked = model.liked.filter { snap in
+            if seen.contains(snap.id) { return false }
+            seen.insert(snap.id); return true
+        }
+
+        // 2) Ensure likedIDs matches snapshot ids (union)
+        let snapshotIDs = Set(model.liked.map(\.id))
+        model.likedIDs.formUnion(snapshotIDs)
+
+        // 3) Make sure rating keys imply "seen"
+        model.seenIDs.formUnion(model.ratings.keys)
+
+        // 4) Version bump if we touched anything (cheap heuristic)
+        model.version &+= 1
     }
 }
 
@@ -99,10 +135,8 @@ final class JSONLibraryStore: LibraryStore {
 
     func saveDebounced() {
         queue.sync {
-            // cancel any scheduled write
             pendingWrite?.cancel()
 
-            // Snapshot while on the queue (avoid nested sync on same queue)
             let snapshot = self._state
             let destination = self.url
             let backup = self.backupURL
@@ -144,9 +178,16 @@ private extension JSONLibraryStore {
                 appropriateFor: nil,
                 create: true
             )
-            let dir = base.appendingPathComponent("Shufflix", isDirectory: true)
+            // Use bundle identifier for namespacing
+            let bundleID = Bundle.main.bundleIdentifier ?? "Shufflix"
+            let dir = base.appendingPathComponent(bundleID, isDirectory: true)
             if !fm.fileExists(atPath: dir.path) {
                 try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: fileProtectionAttributes())
+                // Avoid iCloud backups for the cache-like library file
+                var rv = URLResourceValues()
+                rv.isExcludedFromBackup = true
+                var d = dir
+                try? d.setResourceValues(rv)
             }
             return dir.appendingPathComponent(filename)
         } catch {
@@ -185,12 +226,11 @@ private extension JSONLibraryStore {
 
         // Try backup
         if let data = try? Data(contentsOf: backupURL), !data.isEmpty {
-            let model = try dec.decode(UserLibrary.self, from: data)
-            var migrated = model
-            migrateIfNeeded(&migrated)
+            var model = try dec.decode(UserLibrary.self, from: data)
+            migrateIfNeeded(&model)
             // attempt to restore primary from backup
-            try? atomicWrite(migrated, to: url, backupURL: backupURL)
-            return migrated
+            try? atomicWrite(model, to: url, backupURL: backupURL)
+            return model
         }
 
         // Nothing on disk → fresh state
@@ -228,23 +268,44 @@ private extension JSONLibraryStore {
         #endif
     }
 
-    /// Hook for future schema evolution (no-ops today).
+    /// Hook for future schema evolution.
     static func migrateIfNeeded(_ model: inout UserLibrary) {
-        // Example:
+        // Example migrations:
         // if model.version < 1 { /* transform fields */ model.version = 1 }
-        // Keep as placeholder; preserving your current schema.
+        // if model.version < 2 { /* add new defaults */ model.version = 2 }
+        // For now, keep as placeholder; `UserLibrary.init(from:)` repairs common drift.
     }
 }
 
 // MARK: - Convenience Mutators
 
 extension JSONLibraryStore {
-    func markSeen(_ id: Int) { mutate { $0.seenIDs.insert(id) }; saveDebounced() }
-    func markSkipped(_ id: Int) { mutate { $0.skippedIDs.insert(id); $0.seenIDs.insert(id) }; saveDebounced() }
-    func unskip(_ id: Int) { mutate { $0.skippedIDs.remove(id) }; saveDebounced() }
+    func markSeen(_ id: Int) {
+        mutate { $0.seenIDs.insert(id) }
+        saveDebounced()
+    }
+
+    func markSkipped(_ id: Int) {
+        mutate {
+            $0.skippedIDs.insert(id)
+            $0.seenIDs.insert(id)
+        }
+        saveDebounced()
+    }
+
+    func unskip(_ id: Int) {
+        mutate { $0.skippedIDs.remove(id) }
+        saveDebounced()
+    }
 
     /// Legacy helper: updates only the ID set (no snapshot). Prefer `like(item:)`.
-    func like(_ id: Int) { mutate { $0.likedIDs.insert(id); $0.seenIDs.insert(id) }; saveDebounced() }
+    func like(_ id: Int) {
+        mutate {
+            $0.likedIDs.insert(id)
+            $0.seenIDs.insert(id)
+        }
+        saveDebounced()
+    }
 
     /// Persist a full snapshot for the Liked list (recommended).
     func like(item: TitleItem) {
@@ -274,13 +335,17 @@ extension JSONLibraryStore {
 
     func rate(_ id: Int, stars: Int?) {
         mutate {
-            if let s = stars, s > 0 { $0.ratings[id] = s; $0.seenIDs.insert(id) }
-            else { $0.ratings.removeValue(forKey: id) }
+            if let s = stars, s > 0 {
+                $0.ratings[id] = s
+                $0.seenIDs.insert(id)
+            } else {
+                $0.ratings.removeValue(forKey: id)
+            }
         }
         saveDebounced()
     }
 
-    // MARK: - NEW: Deck Snapshot (Option #1)
+    // MARK: - Deck Snapshot
 
     /// Save a lightweight snapshot of the deck (cap for size).
     func saveDeckSnapshot(_ items: [TitleItem], cap: Int = 20) {
@@ -295,15 +360,14 @@ extension JSONLibraryStore {
     }
 }
 
-// MARK: - Option #2: Bundled Seed Loader
+// MARK: - Option: Bundled Seed Loader
 
 /// Reads a bundled `seed_titles.json` (array of `StoredTitle`) to show *instant* cards on the very first launch.
 /// Place `seed_titles.json` in the app bundle (e.g., under Resources) matching `StoredTitle` fields.
 enum SeedLoader {
     static func loadSeed() -> [StoredTitle] {
         guard let url = Bundle.main.url(forResource: "seed_titles", withExtension: "json"),
-              let data = try? Data(contentsOf: url)
-        else { return [] }
+              let data = try? Data(contentsOf: url) else { return [] }
 
         do {
             let dec = JSONDecoder()

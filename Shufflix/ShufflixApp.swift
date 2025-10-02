@@ -3,6 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
+//  Updated 10/2 - 8:00
 //
 
 import SwiftUI
@@ -29,7 +30,6 @@ struct ShufflixApp: App {
                 .task {
                     _ = Haptics.shared
                     Haptics.shared.prewarm()
-                    // Optional: throttle gestures slightly if desired
                     Haptics.shared.minInterval = 0.0
                 }
 
@@ -40,15 +40,14 @@ struct ShufflixApp: App {
 
                 // ScenePhase-driven maintenance with re-entry guards
                 .task(id: scenePhase) {
-                    // Guard repeated callbacks for the same phase
                     guard scenePhase != lastHandledPhase else { return }
                     lastHandledPhase = scenePhase
 
                     switch scenePhase {
                     case .active:
-                        // Quiet top-up on foreground (only if we’re visibly running low and not already loading)
+                        // Quiet top-up on foreground (detached so UI stays snappy)
                         if vm.currentDeck().count < 6 && !vm.isLoading {
-                            await vm.loadMore()
+                            Task.detached { await vm.loadMore() }
                         }
                         // Pull any server updates since last time
                         await syncer.pullServerDeltas(mergeInto: vm)
@@ -61,9 +60,11 @@ struct ShufflixApp: App {
                     }
                 }
 
-                // Best-effort: flush on termination, in case we skip background (rare on iOS but free on macOS)
-                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
-                    vm.flush()
+                // Best-effort flush on termination
+                .onReceive(
+                    NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)
+                ) { _ in
+                    Task { vm.flush() }
                 }
         }
     }

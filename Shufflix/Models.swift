@@ -3,6 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
+//  Refactored: 2025-10-02
 //
 
 import Foundation
@@ -10,22 +11,24 @@ import PostgREST   // for AnyJSON (jsonb)
 
 // MARK: - Media
 
+@frozen
 enum MediaType: String, Codable {
-    case movie, tv, unknown
+    case movie
+    case tv
+    case unknown
 
     var isMovie: Bool { self == .movie }
     var isTV:    Bool { self == .tv }
 
-    // Graceful decode: unrecognized → .unknown
+    // Graceful decode: unrecognized → .unknown (never throws)
     init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let raw = (try? container.decode(String.self))?.lowercased() ?? ""
+        let raw = (try? decoder.singleValueContainer().decode(String.self))?.lowercased() ?? ""
         self = MediaType.fromLoose(raw)
     }
 
     func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
+        var c = encoder.singleValueContainer()
+        try c.encode(rawValue)
     }
 
     /// Maps arbitrary strings to a safe MediaType
@@ -38,7 +41,9 @@ enum MediaType: String, Codable {
     }
 }
 
+// =====================================================================
 // MARK: - Providers
+// =====================================================================
 
 struct ProviderLink: Hashable, Codable {
     let name: String
@@ -46,7 +51,9 @@ struct ProviderLink: Hashable, Codable {
     let logoURL: URL?
 }
 
+// =====================================================================
 // MARK: - Titles (UI-facing)
+// =====================================================================
 
 struct TitleItem: Identifiable, Hashable, Codable {
     let id: Int
@@ -61,7 +68,7 @@ struct TitleItem: Identifiable, Hashable, Codable {
     let tmdbVoteCount: Int?
 }
 
-// MARK: - UI Helpers
+// MARK: UI Helpers
 
 extension TitleItem {
     var hasPoster: Bool { posterURL != nil }
@@ -70,18 +77,26 @@ extension TitleItem {
     /// e.g., "7.9 (82k)" or "—" if no votes
     var ratingText: String {
         guard let tmdbRating, let votes = tmdbVoteCount, votes > 0 else { return "—" }
-        let k: String
+
+        let votesText: String
         if votes >= 1_000 {
-            k = String(format: "%dk", votes / 1_000)
+            // 1,200 → "1.2k"   82,000 → "82k"
+            let thousands = Double(votes) / 1_000.0
+            votesText = thousands >= 10
+                ? String(format: "%.0fk", thousands)
+                : String(format: "%.1fk", thousands)
         } else {
-            k = "\(votes)"
+            votesText = "\(votes)"
         }
-        return String(format: "%.1f (%@)", tmdbRating, k)
+        return String(format: "%.1f (%@)", tmdbRating, votesText)
     }
 }
 
+// =====================================================================
 // MARK: - Ratings
+// =====================================================================
 
+@frozen
 enum StarRating: Int, Codable, CaseIterable {
     case one = 1, two, three, four, five
 
@@ -91,9 +106,11 @@ enum StarRating: Int, Codable, CaseIterable {
     }
 }
 
+// =====================================================================
 // MARK: - Persistence Snapshot (local JSON)
+// =====================================================================
 
-/// Lightweight persistence form of TitleItem (Codable).
+/// Lightweight persistence form of `TitleItem` (Codable).
 struct StoredTitle: Codable, Hashable {
     let id: Int
     let mediaType: String
@@ -108,7 +125,7 @@ struct StoredTitle: Codable, Hashable {
     let providers: [ProviderLink]?
 }
 
-// MARK: - Conversions (UI <-> Persistence)
+// MARK: Conversions (UI <-> Persistence)
 
 extension TitleItem {
     var stored: StoredTitle {
@@ -148,22 +165,22 @@ extension StoredTitle {
 // MARK: - Supabase Rows (DB-facing models)
 // =====================================================================
 
-/// Mirrors `public.titles` (cache) for decoding/encoding via Supabase.
+/// Mirrors `public.titles` (cache).  Snake_case fields match DB columns.
 struct TitleCache: Codable, Identifiable, Hashable {
     // Convenience ID to use in SwiftUI lists
     var id: String { "\(tmdb_id)-\(media)" }
 
     let tmdb_id: Int64
-    let media: String            // "movie" | "tv" (map to MediaType with .fromLoose)
+    let media: String               // "movie" | "tv" (map to MediaType with .fromLoose)
 
     let name: String?
     let poster_path: String?
-    let release_date: String?    // YYYY-MM-DD
+    let release_date: String?       // YYYY-MM-DD
     let popularity: Double?
     let certification: String?
     let runtime_min: Int?
     let seasons: Int?
-    let providers: AnyJSON?      // jsonb
+    let providers: AnyJSON?         // jsonb
 }
 
 /// Mirrors `public.user_titles` for RLS-backed reads/writes.
@@ -171,7 +188,7 @@ struct UserTitle: Codable, Identifiable, Hashable {
     let id: UUID?
     let user_id: UUID?
     let tmdb_id: Int64
-    let media: String            // "movie" | "tv"
+    let media: String               // "movie" | "tv"
 
     var liked: Bool
     var skipped: Bool
@@ -188,11 +205,13 @@ struct UserTitle: Codable, Identifiable, Hashable {
     var hasAnyAction: Bool { liked || skipped || seen || rating != nil }
 }
 
+// =====================================================================
 // MARK: - Conversions (DB -> UI/Persistence)
+// =====================================================================
 
 extension TitleCache {
-    /// Build a minimal `StoredTitle` snapshot (so lists can render offline quickly).
-    /// Note: We keep providers nil here unless you later define a decoding schema for the jsonb.
+    /// Build a minimal `StoredTitle` snapshot (offline-first list rendering).
+    /// Note: `popularity` is not a rating; surface it only if you want *some* value.
     var asStoredTitle: StoredTitle {
         let poster = Constants.imageURL(path: poster_path, size: .posterDefault)?.absoluteString
         return StoredTitle(
@@ -201,17 +220,19 @@ extension TitleCache {
             name: name ?? "",
             year: TitleCache.yearString(from: release_date) ?? "",
             posterURLString: poster,
-            genres: [],                 // You can hydrate with TMDB detail if needed
+            genres: [],                 // hydrate via TMDB detail as needed
             overview: nil,
-            tmdbRating: popularity,     // Not a rating, but gives you something to show if desired
+            tmdbRating: popularity,
             tmdbVoteCount: nil,
             providers: nil
         )
     }
 
-    /// Handy parser to extract a 4-digit year from "YYYY-MM-DD".
+    /// Extracts a 4-digit year from an ISO "YYYY-MM-DD" (tolerant).
     static func yearString(from isoDate: String?) -> String? {
-        guard let iso = isoDate, iso.count >= 4 else { return nil }
-        return String(iso.prefix(4))
+        guard let s = isoDate?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        // Fast path: standard format
+        if s.count >= 4 { return String(s.prefix(4)) }
+        return nil
     }
 }

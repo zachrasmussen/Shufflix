@@ -3,10 +3,10 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//Updated 9/27 - 7:45
+//  Refactored: 2025-10-02
+//
 
 import SwiftUI
-import UIKit
 
 private enum SearchTuning {
     static let minQueryLength = 2
@@ -17,6 +17,11 @@ private enum SearchTuning {
 struct FilterSheet: View {
     @EnvironmentObject var vm: DeckViewModel
     @Environment(\.dismiss) private var dismiss
+
+    // Caller supplies this to open Profile/Settings full screen.
+    // Example usage from parent:
+    // FilterSheet(onOpenSettings: { dismissSheetThenShowSettings() })
+    var onOpenSettings: (() -> Void)? = nil
 
     // Local working copy (mutate VM only on Apply)
     @State private var kind: ContentKind = .all
@@ -181,9 +186,10 @@ struct FilterSheet: View {
             .navigationTitle("Filters")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // Reset button
                 ToolbarItem(placement: .cancellationAction) {
                     Button(role: .destructive) {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Haptics.shared.light()
                         withAnimation(.snappy) {
                             kind = .all
                             selectedProviders.removeAll()
@@ -195,11 +201,21 @@ struct FilterSheet: View {
                     }
                     .accessibilityHint("Clear all filters")
                 }
+
+                // NEW: Gear button → delegate to parent
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        onOpenSettings?()
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Profile & Settings")
+                }
             }
             // Sticky Apply bar
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 ApplyBar(hasChanges: hasChanges) {
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    Haptics.shared.success()
                     // Single assignment triggers DeckViewModel.didSet → applyFilters()
                     vm.filters = Filters(kind: kind, providers: selectedProviders, genres: selectedGenres)
                     dismiss()
@@ -234,7 +250,7 @@ struct FilterSheet: View {
     // MARK: - Search (single, debounced, cancellable)
     private func searchChanged(_ newValue: String, immediate: Bool = false) {
         searchTask?.cancel()
-        results.removeAll()
+        results.removeAll(keepingCapacity: true)
         searchError = nil
 
         let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -350,6 +366,8 @@ private struct SectionCard<Content: View>: View {
                 .fill(.ultraThinMaterial)
                 .shadow(color: .black.opacity(0.05), radius: 12, x: 0, y: 6)
         )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
     }
 }
 
@@ -436,6 +454,8 @@ private struct ResultRow: View {
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.name)\(item.year.isEmpty ? "" : ", \(item.year)")")
     }
 }
 
@@ -480,6 +500,7 @@ private struct SegmentedCapsulePicker<T: Hashable, Label: View>: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.secondary.opacity(0.08))
         )
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -502,6 +523,7 @@ private struct ActiveFilterSummary: View {
                     .font(.footnote.weight(.semibold))
             }
             .buttonStyle(.borderless)
+            .accessibilityHint("Clear selected \(label)")
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 10)
@@ -544,6 +566,7 @@ private struct ApplyBar: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .disabled(!hasChanges)
+                .accessibilityHint("Apply current filter selections")
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 10)
@@ -551,5 +574,6 @@ private struct ApplyBar: View {
             .background(.regularMaterial)
         }
         .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: -2)
+        .accessibilityElement(children: .contain)
     }
 }

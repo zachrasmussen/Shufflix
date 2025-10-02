@@ -3,12 +3,14 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
+//  Updated 10/2 - 8:00
 //
 
 import SwiftUI
 import AuthenticationServices
 import Supabase
 import UIKit
+import CryptoKit
 
 struct SignInView: View {
   // MARK: - UI State
@@ -16,6 +18,9 @@ struct SignInView: View {
   @State private var isLoading = false
   @State private var errorMessage: String? = nil
   @State private var animateBlob = false
+
+  // MARK: - OIDC nonce
+  @State private var currentNonce: String?
 
   var body: some View {
     ZStack {
@@ -150,6 +155,11 @@ private extension SignInView {
     SignInWithAppleButton(.continue) { request in
       // Request basic scopes; keep it simple and privacy-friendly.
       request.requestedScopes = [.fullName, .email]
+
+      // Best-practice: include a nonce with OIDC providers.
+      let nonce = Self.randomNonce()
+      currentNonce = nonce
+      request.nonce = Self.sha256(nonce)
     } onCompletion: { result in
       switch result {
       case .success(let auth):
@@ -219,7 +229,7 @@ private struct ErrorToast: View {
 // MARK: - Apple Auth → Supabase
 private extension SignInView {
   func showError(_ message: String) {
-    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+    Haptics.shared.warning()
     withAnimation(.spring(response: 0.4, dampingFraction: 0.9)) {
       errorMessage = message
     }
@@ -235,6 +245,7 @@ private extension SignInView {
       return
     }
 
+    let nonce = currentNonce // may be nil if Apple didn’t echo back
     isLoading = true
 
     Task {
@@ -244,7 +255,7 @@ private extension SignInView {
           credentials: OpenIDConnectCredentials(
             provider: .apple,
             idToken: idToken,
-            nonce: nil // If you add a nonce later, pass it here
+            nonce: nonce // pass the original nonce (unhashed)
           )
         )
 
@@ -252,8 +263,8 @@ private extension SignInView {
         await MainActor.run {
           isLoading = false
           errorMessage = nil
-          UINotificationFeedbackGenerator().notificationOccurred(.success)
-          // Root auth router will switch screens
+          Haptics.shared.success()
+          // Root auth router (ContentView) will swap to the deck
           print("✅ Signed in as \(session.user.id)")
         }
       } catch {
@@ -263,6 +274,30 @@ private extension SignInView {
         }
       }
     }
+  }
+
+  // MARK: Nonce helpers
+  static func randomNonce(length: Int = 32) -> String {
+    precondition(length > 0)
+    let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+    var result = ""
+    result.reserveCapacity(length)
+    var remaining = length
+
+    while remaining > 0 {
+      var random: UInt8 = 0
+      let status = SecRandomCopyBytes(kSecRandomDefault, 1, &random)
+      if status != errSecSuccess { continue }
+      result.append(charset[Int(random) % charset.count])
+      remaining -= 1
+    }
+    return result
+  }
+
+  static func sha256(_ input: String) -> String {
+    let data = Data(input.utf8)
+    let hashed = SHA256.hash(data: data)
+    return hashed.compactMap { String(format: "%02x", $0) }.joined()
   }
 }
 

@@ -3,7 +3,8 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//Updated 9/27 - 7:45
+//  Refactored: 2025-10-02
+//
 
 import SwiftUI
 
@@ -143,7 +144,7 @@ struct TitleDetailView: View {
             await loadTask?.value
         }
         .onDisappear {
-            // Drop trailer to stop playback if the view leaves (saves battery)
+            // Stop playback if the view leaves (saves battery)
             trailerURL = nil
         }
         // Keep local rating in sync if something external changes it
@@ -280,6 +281,8 @@ private struct PosterPager: View {
         .tabViewStyle(.page)
         .indexViewStyle(.page(backgroundDisplayMode: .automatic))
         .animation(.easeInOut(duration: 0.2), value: pageIndex)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(trailerURL == nil ? "Poster" : (pageIndex == 0 ? "Poster. Swipe to trailer." : "Trailer"))
     }
 }
 
@@ -351,10 +354,9 @@ private struct CollapsibleText: View {
                         .lineLimit(4)
                         .overlay(
                             GeometryReader { proxy in
-                                // If the 4-line layout is taller than ~4 lines of body, assume truncation.
-                                // This is a lightweight heuristic that avoids line measuring APIs.
+                                // Lightweight heuristic to detect truncation
                                 Color.clear.onAppear {
-                                    truncated = proxy.size.height > 72 // ~4 * 18pt line height
+                                    truncated = proxy.size.height > 72 // ~4 * 18pt
                                 }
                             }
                         )
@@ -374,13 +376,11 @@ private struct CollapsibleText: View {
 
 private struct GenreChipsGrid: View {
     let genres: [String]
-    private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: 88), spacing: 8)]
-    }
+    private var columns: [GridItem] { [GridItem(.adaptive(minimum: 88), spacing: 8)] }
     var body: some View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
             ForEach(genres, id: \.self) { g in
-                Chip(text: g)
+                Chip(text: g).accessibilityLabel("Genre \(g)")
             }
         }
     }

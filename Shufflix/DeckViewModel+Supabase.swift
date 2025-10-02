@@ -3,20 +3,56 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 10/01/25.
+//  Updated 10/02/25 — Supabase helpers + safe writes
 //
 
 import Foundation
+import Supabase
 
 @MainActor
 extension DeckViewModel {
-  /// Convenience accessor
+  // MARK: - Convenience
   private var sdb: SupabaseService { SupabaseService() }
 
+  // MARK: - Remote reads (Liked)
+ 
+  /// Hydrates `likedCache` (names/posters) for the liked rows using the Titles cache table.
+    @MainActor
+    func hydrateLikedCacheFromSupabase() async {
+        // Deduplicate (tmdb_id, media) pairs using a string key
+        var seen = Set<String>()
+        var pairs: [(Int64, String)] = []
+
+        for row in likedFromRemote {
+            let key = "\(row.tmdb_id)-\(row.media)"
+            if !seen.contains(key) {
+                seen.insert(key)
+                pairs.append((Int64(row.tmdb_id), row.media))
+            }
+        }
+
+        guard !pairs.isEmpty else {
+            self.likedCache = []
+            print("likedCache hydrated: 0")
+            return
+        }
+
+        do {
+            let cache = try await SupabaseService().fetchTitleCache(ids: pairs)
+            self.likedCache = cache
+            print("likedCache hydrated:", cache.count)
+        } catch {
+            print("hydrateLikedCacheFromSupabase error:", error)
+        }
+    }
+
+
+  // MARK: - Remote writes (Upserts)
   /// Like a title (and optionally upsert minimal cache so lists render offline quickly).
   func like(tmdbID: Int64, media: String, cache: TitleCache? = nil) {
     // ---- Optimistic local update (optional)
     // TODO: Update your local store/UI immediately so the card disappears and list updates.
-    // e.g., self.store.markLiked(id: Int(tmdbID), media: media)
+    // e.g., self.store.like(item: someTitleItem)
 
     Task {
       do {
@@ -28,21 +64,19 @@ extension DeckViewModel {
           media: media,
           liked: true
         )
-        // Success: you can fire haptics, etc.
+        // Success: fire haptics, enqueue refresh if needed
       } catch {
         // ---- Optional revert of optimistic change
-        // TODO: Revert local change if you did an optimistic update.
-        // e.g., self.store.unlike(id: Int(tmdbID), media: media)
+        // e.g., self.store.unlike(item.id)
         print("Supabase like failed:", error)
       }
     }
   }
 
-  /// Rate a title (1–5 stars)
+  /// Rate a title (1–5). `SupabaseService` clamps to 1–5 before sending.
   func rate(tmdbID: Int64, media: String, stars: Int) {
     // ---- Optimistic local update (optional)
-    // TODO: Apply rating locally so UI reflects new stars immediately.
-    // e.g., self.store.setRating(id: Int(tmdbID), media: media, stars: stars)
+    // e.g., self.store.rate(item.id, stars: stars)
 
     Task {
       do {
@@ -53,7 +87,6 @@ extension DeckViewModel {
         )
       } catch {
         // ---- Optional revert
-        // TODO: Revert local rating if needed.
         print("Supabase rate failed:", error)
       }
     }
@@ -62,8 +95,7 @@ extension DeckViewModel {
   /// Skip (don’t resurface)
   func skip(tmdbID: Int64, media: String) {
     // ---- Optimistic local update (optional)
-    // TODO: Remove from deck locally so it doesn’t resurface.
-    // e.g., self.store.markSkipped(id: Int(tmdbID), media: media)
+    // e.g., self.store.markSkipped(item.id)
 
     Task {
       do {
@@ -82,8 +114,7 @@ extension DeckViewModel {
   /// Mark as seen (watched)
   func markSeen(tmdbID: Int64, media: String) {
     // ---- Optimistic local update (optional)
-    // TODO: Update local state (and lists) for “seen”.
-    // e.g., self.store.markSeen(id: Int(tmdbID), media: media)
+    // e.g., self.store.markSeen(item.id)
 
     Task {
       do {
@@ -99,6 +130,7 @@ extension DeckViewModel {
     }
   }
 
+  // MARK: - Server → Local merge hook (for future sync)
   /// Merge a server row into local state (called by your sync manager).
   func applyServerRow(tmdbID: Int64,
                       media: String,

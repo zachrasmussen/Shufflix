@@ -3,11 +3,13 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//Updated 9/30 - 8:30
+//  Refactored:
+//
 
 import Foundation
 import SwiftUI
 import Combine
+import Supabase
 
 // MARK: - Types
 
@@ -35,6 +37,10 @@ final class DeckViewModel: ObservableObject {
     @Published private(set) var deck: [TitleItem] = []
     @Published private(set) var liked: [TitleItem] = []     // persisted via store (snapshots)
     @Published private(set) var skipped: [TitleItem] = []   // UI-only session history (IDs persist via store)
+    
+    // Remote (Supabase) — temporary sink for testing/inspection
+    @Published var likedFromRemote: [UserTitle] = []
+    @Published var likedCache: [TitleCache] = []
 
     // Filters
     @Published var filters = Filters() {
@@ -54,7 +60,7 @@ final class DeckViewModel: ObservableObject {
     // Ratings (persisted via store; mirrored for fast UI lookup)
     @Published private(set) var ratings: [Int: Int] = [:]
 
-    // ✅ NEW: Watched (persisted via UserDefaults; used only by LikedListView)
+    // ✅ Watched (persisted via UserDefaults; used only by LikedListView)
     @Published private(set) var watchedIDs: Set<Int> = []
     private let watchedDefaultsKey = "com.shufflix.library.watchedIDs.v1"
 
@@ -81,8 +87,7 @@ final class DeckViewModel: ObservableObject {
     // Cancellation
     private var loadTask: Task<Void, Never>?
 
-    // Computed: everything to exclude from the deck
-    // NOTE: We do NOT exclude watched here; watched is only a ribbon on LikedListView.
+    // Computed: everything to exclude from the deck (recomputed on demand)
     private var blockedIDs: Set<Int> {
         var s = seenIDs
         s.formUnion(skippedIDs)
@@ -96,7 +101,6 @@ final class DeckViewModel: ObservableObject {
     init(store: JSONLibraryStore = JSONLibraryStore()) {
         self.store = store
 
-        // Restore persisted state
         let st = store.state
         self.ratings     = st.ratings
         self.seenIDs     = st.seenIDs
@@ -104,8 +108,11 @@ final class DeckViewModel: ObservableObject {
         self.liked       = st.liked.map { $0.asTitleItem() }
         self.skipped     = [] // session-only history
 
-        // Restore watched from UserDefaults (independent of ratings)
+        // Restore watched from UserDefaults
         loadWatched()
+
+        // Prewarm haptics so first interaction feels instant
+        Haptics.shared.prewarm()
 
         // Initial fetch (cancellable)
         refreshDeck()
@@ -119,18 +126,14 @@ final class DeckViewModel: ObservableObject {
     func isLiked(_ item: TitleItem) -> Bool { liked.contains(where: { $0.id == item.id }) }
     func rating(for item: TitleItem) -> Int? { ratings[item.id] }
 
-    // MARK: - NEW: Watched helpers (for LikedListView)
+    // MARK: - Watched helpers (for LikedListView)
 
     func isWatched(_ item: TitleItem) -> Bool {
         watchedIDs.contains(item.id)
     }
 
     func setWatched(_ watched: Bool, for item: TitleItem) {
-        if watched {
-            watchedIDs.insert(item.id)
-        } else {
-            watchedIDs.remove(item.id)
-        }
+        if watched { watchedIDs.insert(item.id) } else { watchedIDs.remove(item.id) }
         saveWatched()
     }
 
@@ -138,12 +141,11 @@ final class DeckViewModel: ObservableObject {
         setWatched(!isWatched(item), for: item)
     }
 
-    /// Bulk helper (used by optional menu actions in LikedListView)
     func setWatched(_ watched: Bool, for items: [TitleItem]) {
         if watched {
-            watchedIDs.formUnion(items.map { $0.id })
+            watchedIDs.formUnion(items.map(\.id))
         } else {
-            watchedIDs.subtract(items.map { $0.id })
+            watchedIDs.subtract(items.map(\.id))
         }
         saveWatched()
     }
@@ -152,7 +154,6 @@ final class DeckViewModel: ObservableObject {
 
     func likeFromDetail(_ item: TitleItem) {
         pinnedTopID = nil
-
         guard !isLiked(item) else { return }
         removeFromDeckIfPresent(item.id)
 
@@ -161,12 +162,12 @@ final class DeckViewModel: ObservableObject {
 
         store.like(item: item)
         Haptics.shared.impact()
+        snapshotDeck()
         prefetchIfNeeded()
     }
 
     func toggleLike(_ item: TitleItem) {
         pinnedTopID = nil
-
         if let idx = liked.firstIndex(where: { $0.id == item.id }) {
             liked.remove(at: idx)
             store.unlike(item.id)
@@ -176,11 +177,11 @@ final class DeckViewModel: ObservableObject {
             store.like(item: item)
         }
         Haptics.shared.impact()
+        snapshotDeck()
     }
 
     func swipe(_ item: TitleItem, liked didLike: Bool) {
         pinnedTopID = nil
-
         removeFromDeckIfPresent(item.id)
 
         if didLike {
@@ -197,7 +198,17 @@ final class DeckViewModel: ObservableObject {
         seenIDs.insert(item.id)
         Haptics.shared.impact()
         prefilterDeckAfterChange()
+        snapshotDeck()
         prefetchIfNeeded()
+
+        // ---- NEW: Persist to Supabase in the background (non-blocking)
+        Task { [tmdbID = Int64(item.id), media = item.mediaType.rawValue] in
+            if didLike {
+                self.like(tmdbID: tmdbID, media: media)   // defined in DeckViewModel+Supabase
+            } else {
+                self.skip(tmdbID: tmdbID, media: media)   // defined in DeckViewModel+Supabase
+            }
+        }
     }
 
     func setRating(for item: TitleItem, to stars: Int) {
@@ -213,29 +224,31 @@ final class DeckViewModel: ObservableObject {
         if clamped >= 5 {
             Task { await injectSimilar(for: item) }
         }
+        snapshotDeck()
     }
 
     // MARK: - Liked management (reorder / remove)
 
     func moveLiked(from sourceOffsets: IndexSet, to destination: Int) {
         liked.move(fromOffsets: sourceOffsets, toOffset: destination)
-        // If you later persist order, do it here.
+        // Persist custom order later if needed
     }
 
     func removeLiked(at offsets: IndexSet) {
         for idx in offsets {
-            let id = liked[idx].id
-            store.unlike(id)
+            store.unlike(liked[idx].id)
         }
         liked.remove(atOffsets: offsets)
         prefilterDeckAfterChange()
+        snapshotDeck()
     }
 
     func removeLiked(_ item: TitleItem) {
         if let idx = liked.firstIndex(of: item) {
-            liked.remove(at: idx)
             store.unlike(item.id)
+            liked.remove(at: idx)
             prefilterDeckAfterChange()
+            snapshotDeck()
         }
     }
 
@@ -245,14 +258,16 @@ final class DeckViewModel: ObservableObject {
         loadTask?.cancel()
         loadTask = Task { [weak self] in
             guard let self else { return }
-            self.errorMessage = nil
-            self.isLoading = true
-            self.isPrimed = false
-            self.pinnedTopID = nil
-            self.resetPaging()
-            self.deck.removeAll(keepingCapacity: true)
-            await self.loadMoreInternal(minimumCount: self.prefetchThreshold * 2)
-            self.isLoading = false
+            errorMessage = nil
+            isLoading = true
+            isPrimed = false
+            pinnedTopID = nil
+            resetPaging()
+            deck.removeAll(keepingCapacity: true)
+            source.removeAll(keepingCapacity: true)
+            await loadMoreInternal(minimumCount: prefetchThreshold * 2)
+            isLoading = false
+            snapshotDeck()
         }
     }
 
@@ -265,34 +280,55 @@ final class DeckViewModel: ObservableObject {
         feedIndex = 0
     }
 
+    /// Feeds that can actually contribute given the current `filters.kind`
+    private var allowedFeeds: [Feed] {
+        switch filters.kind {
+        case .all:
+            return Array(Feed.allCases)
+        case .movie:
+            return Feed.allCases.filter { f in
+                switch f {
+                case .popularTV, .topTV, .discoverTV, .trendingDay, .trendingWeek: return f == .trendingDay || f == .trendingWeek ? true : false
+                default: return true
+                }
+            }
+        case .tv:
+            return Feed.allCases.filter { f in
+                switch f {
+                case .popularMovie, .topMovie, .discoverMovie, .trendingDay, .trendingWeek: return f == .trendingDay || f == .trendingWeek ? true : false
+                default: return true
+                }
+            }
+        }
+    }
+
     private func loadMoreInternal(minimumCount: Int) async {
         guard !Task.isCancelled else { return }
 
         var totalAppended = 0
         var protection = 0
+        let feeds = allowedFeeds.isEmpty ? Feed.allCases : allowedFeeds
 
         while totalAppended < minimumCount,
-              protection < Feed.allCases.count * 3,
+              protection < feeds.count * 3,
               !Task.isCancelled {
-            protection += 1
+            protection &+= 1
 
             do {
-                let batch = try await fetchNextBatch()
+                let batch = try await fetchNextBatch(from: feeds)
                 let appended = handleIncomingBatch(batch)
                 totalAppended &+= appended
-
-                if appended == 0 {
-                    continue
-                }
+                if appended == 0 { continue }
+            } catch is CancellationError {
+                return
             } catch {
                 if errorMessage == nil { errorMessage = error.localizedDescription }
             }
         }
     }
 
-    private func fetchNextBatch() async throws -> [TitleItem] {
-        let feeds = Feed.allCases
-
+    private func fetchNextBatch(from feeds: [Feed]) async throws -> [TitleItem] {
+        // rotate through allowed feeds
         for _ in 0..<feeds.count {
             let feed = feeds[feedIndex % feeds.count]
             feedIndex &+= 1
@@ -306,17 +342,23 @@ final class DeckViewModel: ObservableObject {
             case .trendingDay:
                 media = try await TMDBService.trending(window: "day", page: page)
             case .popularMovie:
+                guard filters.kind != .tv else { nextPage[feed] = page + 1; continue }
                 media = try await TMDBService.popular(.movie, page: page)
             case .popularTV:
+                guard filters.kind != .movie else { nextPage[feed] = page + 1; continue }
                 media = try await TMDBService.popular(.tv, page: page)
             case .topMovie:
+                guard filters.kind != .tv else { nextPage[feed] = page + 1; continue }
                 media = try await TMDBService.topRated(.movie, page: page)
             case .topTV:
+                guard filters.kind != .movie else { nextPage[feed] = page + 1; continue }
                 media = try await TMDBService.topRated(.tv, page: page)
             case .discoverMovie:
+                guard filters.kind != .tv else { nextPage[feed] = page + 1; continue }
                 let genreIDs = filters.genres.compactMap { reverseGenreMap[$0] }
                 media = try await TMDBService.discover(.movie, page: page, genres: genreIDs)
             case .discoverTV:
+                guard filters.kind != .movie else { nextPage[feed] = page + 1; continue }
                 let genreIDs = filters.genres.compactMap { reverseGenreMap[$0] }
                 media = try await TMDBService.discover(.tv, page: page, genres: genreIDs)
             }
@@ -324,6 +366,7 @@ final class DeckViewModel: ObservableObject {
             nextPage[feed] = page + 1
 
             let mapped = await TMDBService.mapToTitleItems(media)
+            // Exclude blocked immediately
             let fresh = mapped.filter { !blockedIDs.contains($0.id) }
             if !fresh.isEmpty { return fresh.shuffled() }
         }
@@ -335,6 +378,7 @@ final class DeckViewModel: ObservableObject {
     @discardableResult
     private func handleIncomingBatch(_ additions: [TitleItem]) -> Int {
         guard !additions.isEmpty else {
+            // If we already have a deck but weren’t marked primed yet, do it now.
             if !deck.isEmpty && !isPrimed {
                 isPrimed = true
                 if pinnedTopID == nil { pinnedTopID = deck.last?.id }
@@ -342,15 +386,15 @@ final class DeckViewModel: ObservableObject {
             return 0
         }
 
-        // Update master source and derived filters once
+        // 1) Update master source and derived filters once
         source = (source + additions).unique(by: \.id)
         rebuildAvailableFilters(from: source)
 
-        // Exclude items we shouldn't show OR are already on deck
+        // 2) Exclude items we shouldn't show OR are already on deck
         let deckIDs = Set(deck.lazy.map(\.id))
         let cleaned = additions.filter { !blockedIDs.contains($0.id) && !deckIDs.contains($0.id) }
 
-        // Keep only those that match current filters + stable order from source
+        // 3) Keep only those that match current filters + stable order from source
         let poolIDs = Set(filteredPoolIDs())
         let toQueue = cleaned.filter { poolIDs.contains($0.id) }
         guard !toQueue.isEmpty else {
@@ -361,15 +405,16 @@ final class DeckViewModel: ObservableObject {
             return 0
         }
 
-        // Insert new cards at the **bottom** (index 0) to avoid changing the current top.
+        // Insert new cards at the bottom (index 0) to avoid changing the current top.
         deck.insert(contentsOf: toQueue, at: 0)
 
-        // First time we have something → mark primed & pin the current top
+        // Mark primed & pin the current top (the last element) if this is first content
         if !isPrimed, !deck.isEmpty {
             isPrimed = true
             if pinnedTopID == nil { pinnedTopID = deck.last?.id }
         }
 
+        snapshotDeck()
         return toQueue.count
     }
 
@@ -397,9 +442,10 @@ final class DeckViewModel: ObservableObject {
             withAnimation {
                 deck.insert(contentsOf: toQueue, at: 0)
             }
+            snapshotDeck()
         } catch {
             #if DEBUG
-            print("similar fetch error:", error)
+            print("[Deck] similar fetch error:", error)
             #endif
         }
     }
@@ -411,8 +457,8 @@ final class DeckViewModel: ObservableObject {
         let providers = Set(items.lazy.flatMap { $0.providers.lazy.map(\.name) })
         let genres    = Set(items.lazy.flatMap { $0.genres })
 
-        availableProviders = Array(providers).sorted()
-        availableGenres    = Array(genres).sorted()
+        availableProviders = Array(providers).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        availableGenres    = Array(genres).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     /// Applies current `filters` to the visible deck.
@@ -436,7 +482,7 @@ final class DeckViewModel: ObservableObject {
         let toAddItems = toAddIDs.compactMap { idToItem[$0] }
 
         deck.insert(contentsOf: toAddItems, at: 0)
-
+        snapshotDeck()
         prefetchIfNeeded()
     }
 
@@ -459,11 +505,20 @@ final class DeckViewModel: ObservableObject {
         }
 
         if !filters.providers.isEmpty {
-            pool = pool.filter { !Set($0.providers.lazy.map(\.name)).intersection(filters.providers).isEmpty }
+            // Case-insensitive provider matching
+            let wanted = Set(filters.providers.map { $0.lowercased() })
+            pool = pool.filter {
+                !$0.providers.isEmpty &&
+                !$0.providers.lazy.map({ $0.name.lowercased() }).filter({ wanted.contains($0) }).isEmpty
+            }
         }
 
         if !filters.genres.isEmpty {
-            pool = pool.filter { !Set($0.genres).intersection(filters.genres).isEmpty }
+            let wanted = Set(filters.genres.map { $0.lowercased() })
+            pool = pool.filter {
+                !$0.genres.isEmpty &&
+                !$0.genres.lazy.map({ $0.lowercased() }).filter({ wanted.contains($0) }).isEmpty
+            }
         }
 
         return pool.map(\.id)
@@ -491,10 +546,30 @@ final class DeckViewModel: ObservableObject {
         }
     }
 
+    /// Persist a lightweight snapshot of the current deck for instant cold-start.
+    private func snapshotDeck() {
+        guard !deck.isEmpty else { return }
+        store.saveDeckSnapshot(deck)
+    }
+
     // MARK: - App lifecycle
 
     /// Call this from your root view on .background / .inactive
     func flush() { try? store.saveNow() }
+
+    // MARK: - Supabase integration (fetch liked)
+
+    /// Fetches liked rows from Supabase for the current env.
+    func refreshLikedFromSupabase() async {
+        do {
+            let rows = try await SupabaseService().fetchLiked()
+            self.likedFromRemote = rows
+            print("Supabase liked fetched:", rows.count)
+        } catch {
+            self.errorMessage = (error as NSError).localizedDescription
+            print("refreshLikedFromSupabase error:", error)
+        }
+    }
 }
 
 // MARK: - Watched persistence
