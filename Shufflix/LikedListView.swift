@@ -4,6 +4,8 @@
 //
 //  Created by Zach Rasmussen on 9/30/25.
 //  Updated 10/2 — single .task: fetch → backfill → hydrate from Supabase
+//  Updated 10/3 — added LikedStatsBar (liked / watched / unwatched / rated)
+//
 
 import SwiftUI
 
@@ -147,61 +149,69 @@ struct LikedListView: View {
             if vm.liked.isEmpty {
                 EmptyState()
             } else {
-                let items = displayed
-                List {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { (idx, item) in
-                        LikedRowLink(item: item,
-                                     displayIndex: showOrderIndex ? (idx + 1) : nil)
-                        // TRAILING (right→left): Remove (existing behavior)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) {
-                                vm.removeLiked(item) // remove from library
-                                removeFromOrderLedger(id: item.id)
-                                Haptics.shared.impact()
-                            } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                        }
-                        // LEADING (left→right): Toggle Watched ribbon
-                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                            if vm.isWatched(item) {
-                                Button {
-                                    vm.setWatched(false, for: item)
+                VStack(spacing: 8) {
+                    // --- NEW: compact stats bar (liked / watched / unwatched / rated) ---
+                    LikedStatsBar()
+                        .padding(.top, 4)
+                        .padding(.horizontal)
+
+                    // The main list
+                    let items = displayed
+                    List {
+                        ForEach(Array(items.enumerated()), id: \.element.id) { (idx, item) in
+                            LikedRowLink(item: item,
+                                         displayIndex: showOrderIndex ? (idx + 1) : nil)
+                            // TRAILING (right→left): Remove (existing behavior)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    vm.removeLiked(item) // remove from library
+                                    removeFromOrderLedger(id: item.id)
                                     Haptics.shared.impact()
                                 } label: {
-                                    Label("Unwatch", systemImage: "eye.slash")
+                                    Label("Remove", systemImage: "trash")
                                 }
-                                .tint(.gray)
-                            } else {
-                                Button {
-                                    vm.setWatched(true, for: item)
-                                    Haptics.shared.impact()
-                                } label: {
-                                    Label("Watched", systemImage: "checkmark.seal")
+                            }
+                            // LEADING (left→right): Toggle Watched ribbon
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                if vm.isWatched(item) {
+                                    Button {
+                                        vm.setWatched(false, for: item)
+                                        Haptics.shared.impact()
+                                    } label: {
+                                        Label("Unwatch", systemImage: "eye.slash")
+                                    }
+                                    .tint(.gray)
+                                } else {
+                                    Button {
+                                        vm.setWatched(true, for: item)
+                                        Haptics.shared.impact()
+                                    } label: {
+                                        Label("Watched", systemImage: "checkmark.seal")
+                                    }
+                                    .tint(.green)
                                 }
-                                .tint(.green)
                             }
                         }
-                    }
-                    .onMove { src, dst in
-                        guard canReorder else { return }
-                        // IMPORTANT: do NOT mutate vm.liked here.
-                        // We only rewrite the ledger to reflect the user's custom priority.
-                        let currentIDs = items.map(\.id) // current displayed order under custom
-                        var mutableIDs = currentIDs
-                        mutableIDs.move(fromOffsets: src, toOffset: dst)
-                        saveOrderLedger(ids: mutableIDs)
-                    }
-                    .onDelete { indexSet in
-                        for i in indexSet {
-                            let item = items[i]
-                            vm.removeLiked(item)        // remove from library
-                            removeFromOrderLedger(id: item.id) // keep custom order clean
+                        .onMove { src, dst in
+                            guard canReorder else { return }
+                            // IMPORTANT: do NOT mutate vm.liked here.
+                            // We only rewrite the ledger to reflect the user's custom priority.
+                            let currentIDs = items.map(\.id) // current displayed order under custom
+                            var mutableIDs = currentIDs
+                            mutableIDs.move(fromOffsets: src, toOffset: dst)
+                            saveOrderLedger(ids: mutableIDs)
                         }
-                        normalizeLedgerAgainstCurrentLikes()
+                        .onDelete { indexSet in
+                            for i in indexSet {
+                                let item = items[i]
+                                vm.removeLiked(item)        // remove from library
+                                removeFromOrderLedger(id: item.id) // keep custom order clean
+                            }
+                            normalizeLedgerAgainstCurrentLikes()
+                        }
                     }
+                    .listStyle(.insetGrouped)
                 }
-                .listStyle(.insetGrouped)
                 .animation(.default, value: vm.liked)
             }
         }
@@ -478,6 +488,67 @@ private struct WatchedRibbon: View {
             .shadow(radius: 1, x: 0, y: 1)
     }
 }
+
+// MARK: - Stats Bar (liked / watched / unwatched / rated)
+
+private struct LikedStatsBar: View {
+    @EnvironmentObject private var vm: DeckViewModel
+
+    // IDs in Liked
+    private var likedIDs: Set<Int> { Set(vm.liked.map { $0.id }) }
+
+    // Use public API instead of vm.seenIDs:
+    private var watchedCount: Int {
+        vm.liked.reduce(0) { $0 + (vm.isWatched($1) ? 1 : 0) }
+    }
+
+    // If vm.ratings is public, this works. If not, swap with your public accessor (e.g. vm.rating(for:)):
+    private var ratedCount: Int {
+        // Option A: using ratings dict if exposed
+        if let ratings = (vm.ratings as AnyObject) as? [Int:Int] {
+            return ratings.keys.reduce(0) { $0 + (likedIDs.contains($1) ? 1 : 0) }
+        }
+        // Option B: fallback—count via a public accessor if you have one:
+        // return vm.liked.reduce(0) { $0 + (vm.rating(for: $1.id) != nil ? 1 : 0) }
+        return 0
+    }
+
+    private var likedCount: Int { likedIDs.count }
+    private var unwatchedCount: Int { max(likedCount - watchedCount, 0) }
+
+    var body: some View {
+            HStack {
+                StatBlock(number: likedCount,    label: "liked")
+                Spacer()
+                StatBlock(number: watchedCount,  label: "watched")
+                Spacer()
+                StatBlock(number: unwatchedCount,label: "unwatched")
+                Spacer()
+                StatBlock(number: ratedCount,    label: "rated")
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 4)
+            .background(Color.white) // simple flat white
+        }
+
+    @ViewBuilder
+    private func StatBlock(number: Int, label: String) -> some View {
+        VStack(spacing: 2) {
+            Text("\(number)")
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+                .monospacedDigit()
+            Text(label)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+    }
+}
+
 
 // MARK: - Empty State
 
