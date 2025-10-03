@@ -17,6 +17,7 @@ struct DeckRootView: View {
 
     @State private var selected: TitleItem?
     @State private var showFilters = false
+    @State private var showSettings = false
     @State private var didPrimeDeck = false   // ensure one-time initial top-up
 
     var body: some View {
@@ -125,9 +126,21 @@ struct DeckRootView: View {
                     .accessibilityLabel("Liked")
                 }
             }
+            // Filters Sheet
             .sheet(isPresented: $showFilters) {
-                FilterSheet()
-                    .presentationDetents([.medium, .large])
+                FilterSheet(onOpenSettings: {
+                    showFilters = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        showSettings = true
+                    }
+                })
+                .environmentObject(vm)
+                .presentationDetents([.medium, .large])
+                .presentationCornerRadius(20)
+            }
+            // Full-screen Settings
+            .fullScreenCover(isPresented: $showSettings) {
+                SettingsView(onClose: { showSettings = false })
             }
             .navigationDestination(item: $selected) { item in
                 TitleDetailView(item: item)
