@@ -2,7 +2,8 @@
 //  SettingsView.swift
 //  Shufflix
 //
-//  Created by Zach Rasmussen on 10/02/25 - 5:30
+//  Created by Zach Rasmussen on 10/02/25
+//  Updated: 2025-10-03 — Remove Utilities + Haptics; keep Stats, Autoplay, About, Danger Zone
 //
 
 import SwiftUI
@@ -11,74 +12,62 @@ import Supabase
 struct SettingsView: View {
     let onClose: () -> Void
 
-    @State private var userEmail: String? = nil
-    @State private var isSigningOut = false
-    @State private var isDeleting = false   // used for soft delete (deactivation)
-    @State private var confirmDelete = false
-
     // Toast
     @State private var toastMessage: String? = nil
     @State private var toastKind: ToastKind = .success
     @State private var showToast = false
 
-    // Example stats (swap with real values from your VM/store later)
-    @State private var watchedCount = 48
-    @State private var likedCount   = 132
-    @State private var ratedCount   = 77
-    @State private var swipedCount  = 891
+    // Async states
+    @State private var isSigningOut = false
+    @State private var isDeleting = false
+    @State private var confirmDelete = false
+    @State private var isRefreshingStats = false
 
-    @AppStorage("com.shufflix.pref.haptics") private var hapticsOn = true
+    // LIKED-focused stats (match LikedListView)
+    @State private var likedCount     = 0
+    @State private var watchedCount   = 0
+    @State private var unwatchedCount = 0
+    @State private var ratedCount     = 0
+
+    // Preferences
     @AppStorage("com.shufflix.pref.autoplayWifi") private var autoplayWifi = true
+
+    @EnvironmentObject private var vm: DeckViewModel
 
     var body: some View {
         NavigationStack {
             List {
-                // MARK: Account
-                Section("Account") {
-                    HStack(spacing: 12) {
-                        Image(systemName: "person.crop.circle.fill")
-                            .font(.system(size: 36))
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(userEmail ?? "Signed in with Apple")
-                                .font(.headline)
-                            Text("Manage your profile and data")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                // MARK: Your Stats
+                Section("Your Stats") {
+                    StatsRow(label: "Liked",     value: likedCount,     systemImage: "heart.fill")
+                    StatsRow(label: "Watched",   value: watchedCount,   systemImage: "tv")
+                    StatsRow(label: "Unwatched", value: unwatchedCount, systemImage: "eye.slash")
+                    StatsRow(label: "Rated",     value: ratedCount,     systemImage: "star.fill")
+
+                    Button {
+                        Task { await refreshStats() }
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.clockwise")
+                            Text("Refresh Stats")
+                            if isRefreshingStats { Spacer(); ProgressView().padding(.trailing, 2) }
                         }
                     }
-                    .padding(.vertical, 4)
-                }
-
-                // MARK: Badges
-                Section("Badges & Progress") {
-                    BadgesGrid(
-                        watched: watchedCount,
-                        liked: likedCount,
-                        rated: ratedCount,
-                        swiped: swipedCount
-                    )
-                    .padding(.vertical, 4)
+                    .disabled(isRefreshingStats || isSigningOut || isDeleting)
                 }
 
                 // MARK: Preferences
                 Section("Preferences") {
-                    Toggle("Haptics", isOn: $hapticsOn)
                     Toggle("Autoplay Trailers (Wi-Fi)", isOn: $autoplayWifi)
                 }
 
                 // MARK: About
                 Section("About") {
-                    HStack {
-                        Text("Version")
-                        Spacer()
-                        Text(appVersionString).foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Text("Build")
-                        Spacer()
-                        Text(appBuildString).foregroundStyle(.secondary)
-                    }
+                    KeyValueRow(key: "Version", value: appVersionString)
+                    KeyValueRow(key: "Build",   value: appBuildString)
+//                    if let env = appEnvString {
+//                        KeyValueRow(key: "Environment", value: env)
+//                    }
                 }
 
                 // MARK: Danger Zone
@@ -88,12 +77,11 @@ struct SettingsView: View {
                             isSigningOut = true
                             defer { isSigningOut = false }
                             await signOut()
-                            // No onClose(); ContentView flips via authStateChanges
                         }
                     } label: {
                         HStack {
                             Text("Sign Out")
-                            if isSigningOut { ProgressView().padding(.leading, 6) }
+                            if isSigningOut { Spacer(); ProgressView() }
                         }
                     }
                     .disabled(isDeleting)
@@ -101,26 +89,24 @@ struct SettingsView: View {
                     Button(role: .destructive) {
                         confirmDelete = true
                     } label: {
-                        Text("Delete Account")
+                        Text("Deactivate Account")
                     }
                     .disabled(isSigningOut)
-
                     .confirmationDialog(
                         "Deactivate your account?",
                         isPresented: $confirmDelete,
                         titleVisibility: .visible
                     ) {
-                        Button("Deactivate (Soft Delete)", role: .destructive) {
+                        Button("Deactivate", role: .destructive) {
                             Task {
                                 isDeleting = true
                                 defer { isDeleting = false }
-                                await deleteAccount() // soft delete
-                                // No onClose(); ContentView flips via authStateChanges
+                                await deleteAccount()
                             }
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("This will deactivate your account (soft delete): your data becomes inaccessible and you’ll be signed out. You can contact support to restore it or request permanent erasure.")
+                        Text("This will deactivate your account and sign you out. Contact support to restore or request permanent erasure.")
                     }
                 } header: {
                     Text("Danger Zone")
@@ -128,19 +114,18 @@ struct SettingsView: View {
                     Text("Deactivation hides your profile and synced data from the app. For permanent erasure, contact support.")
                 }
             }
-            .navigationTitle("Profile")
+            .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Close", action: onClose)
                         .disabled(isSigningOut || isDeleting)
                 }
             }
-            .task {
-                if let user = Supa.client.auth.currentUser {
-                    userEmail = user.email
-                }
-            }
-            // Overlays: progress blocker + toast banner
+            // Initial stats load + live updates when relevant VM pieces change
+            .task { await refreshStats() }
+            .onReceive(vm.$liked)      { _ in Task { await refreshStats() } }
+            .onReceive(vm.$ratings)    { _ in Task { await refreshStats() } }
+            .onReceive(vm.$watchedIDs) { _ in Task { await refreshStats() } }
             .overlay {
                 ZStack {
                     if isSigningOut || isDeleting {
@@ -165,32 +150,44 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Stats refresh (LIKED-focused)
+    private func refreshStats() async {
+        isRefreshingStats = true
+        defer { isRefreshingStats = false }
+
+        // Source-of-truth: vm.liked / vm.isWatched(_:) / vm.ratings
+        let likedIDs   = Set(vm.liked.map(\.id))
+        let likedCnt   = likedIDs.count
+        let watchedCnt = vm.liked.reduce(0) { $0 + (vm.isWatched($1) ? 1 : 0) }
+        let ratedCnt   = vm.ratings.keys.reduce(0) { $0 + (likedIDs.contains($1) ? 1 : 0) }
+        let unwatched  = max(likedCnt - watchedCnt, 0)
+
+        withAnimation(.easeOut(duration: 0.15)) {
+            likedCount     = likedCnt
+            watchedCount   = watchedCnt
+            ratedCount     = ratedCnt
+            unwatchedCount = unwatched
+        }
+    }
+
     // MARK: - Supabase hooks
     private func signOut() async {
         do {
             try await Supa.client.auth.signOut()
-            print("✅ Signed out")
             showToast("Signed out", kind: .success)
         } catch {
-            print("❌ Sign out failed:", error.localizedDescription)
             showToast("Sign out failed: \(error.localizedDescription)", kind: .error)
         }
     }
 
     private func deleteAccount() async {
         do {
-            // 1) Soft delete on server
             _ = try await Supa.client.database
                 .rpc("soft_delete_current_user")
                 .execute()
-            print("✅ Account soft-deleted (server)")
-
-            // 2) Clear local session so UI flips immediately
             try? await Supa.client.auth.signOut()
-            print("✅ Local session cleared")
             showToast("Account deactivated", kind: .success)
         } catch {
-            print("❌ Deactivate (soft delete) failed:", error.localizedDescription)
             showToast("Deactivate failed: \(error.localizedDescription)", kind: .error)
         }
     }
@@ -211,6 +208,43 @@ struct SettingsView: View {
     }
     private var appBuildString: String {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+    }
+    private var appEnvString: String? {
+        // Optional Info.plist key if you want to show "staging"/"prod"
+        (Bundle.main.infoDictionary?["APP_ENV"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+}
+
+// MARK: - Small UI bits
+
+private struct StatsRow: View {
+    let label: String
+    let value: Int
+    let systemImage: String
+
+    var body: some View {
+        HStack {
+            Label(label, systemImage: systemImage)
+            Spacer()
+            Text("\(value)")
+                .font(.system(.headline, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label) \(value)")
+    }
+}
+
+private struct KeyValueRow: View {
+    let key: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(key)
+            Spacer()
+            Text(value).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -247,83 +281,5 @@ private struct ToastBanner: View {
         .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(.quaternary, lineWidth: 1))
         .shadow(radius: 2, y: 1)
-    }
-}
-
-// MARK: - Badges
-
-private struct BadgesGrid: View {
-    let watched: Int
-    let liked: Int
-    let rated: Int
-    let swiped: Int
-
-    private let cols = Array(repeating: GridItem(.flexible(), spacing: 12), count: 2)
-
-    var body: some View {
-        LazyVGrid(columns: cols, spacing: 12) {
-            BadgeCard(
-                title: "Watcher",
-                value: watched,
-                systemImage: "tv",
-                caption: milestoneLabel(watched, steps: [10, 25, 50, 100])
-            )
-            BadgeCard(
-                title: "Curator",
-                value: liked,
-                systemImage: "heart.fill",
-                caption: milestoneLabel(liked, steps: [25, 50, 100, 250])
-            )
-            BadgeCard(
-                title: "Critic",
-                value: rated,
-                systemImage: "star.fill",
-                caption: milestoneLabel(rated, steps: [10, 50, 100, 200])
-            )
-            BadgeCard(
-                title: "Swiper",
-                value: swiped,
-                systemImage: "hand.tap.fill",
-                caption: milestoneLabel(swiped, steps: [100, 500, 1000, 2500])
-            )
-        }
-    }
-
-    private func milestoneLabel(_ v: Int, steps: [Int]) -> String {
-        if let next = steps.first(where: { v < $0 }) {
-            return "\(v) • next at \(next)"
-        } else {
-            return "\(v) • maxed!"
-        }
-    }
-}
-
-private struct BadgeCard: View {
-    let title: String
-    let value: Int
-    let systemImage: String
-    let caption: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(title, systemImage: systemImage)
-                    .labelStyle(.titleAndIcon)
-                    .font(.headline)
-                Spacer()
-                Image(systemName: "rosette")
-            }
-            Text("\(value)")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-            Text(caption)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(.quaternary, lineWidth: 1)
-        )
     }
 }
