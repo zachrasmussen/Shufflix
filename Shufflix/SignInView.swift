@@ -3,7 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Updated 10/2 - 8:00
+//  Updated 10/3 - tappable Terms/Privacy that slide up from local bundled HTML (no global name conflicts)
 //
 
 import SwiftUI
@@ -11,6 +11,7 @@ import AuthenticationServices
 import Supabase
 import UIKit
 import CryptoKit
+import WebKit
 
 struct SignInView: View {
   // MARK: - UI State
@@ -21,6 +22,9 @@ struct SignInView: View {
 
   // MARK: - OIDC nonce
   @State private var currentNonce: String?
+
+  // MARK: - Policy Sheet State
+  @State private var activePolicy: Policy?
 
   var body: some View {
     ZStack {
@@ -57,11 +61,8 @@ struct SignInView: View {
         // Sign in with Apple
         signInButton
 
-        // Fine print
-        Text("By continuing, you agree to the Terms and acknowledge the Privacy Policy.")
-          .font(.footnote)
-          .foregroundStyle(.secondary)
-          .multilineTextAlignment(.center)
+        // Fine print with tappable links that slide up
+        policyFooter
           .padding(.horizontal)
       }
       .padding(.vertical, 32)
@@ -100,6 +101,12 @@ struct SignInView: View {
         .padding(.bottom, 24)
         .frame(maxHeight: .infinity, alignment: .bottom)
       }
+    }
+    .sheet(item: $activePolicy) { policy in
+      PolicySheet(title: policy.title, resourceName: policy.filename)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .ignoresSafeArea(edges: .bottom)
     }
     .onAppear {
       withAnimation(.easeInOut(duration: 8).repeatForever(autoreverses: true)) {
@@ -186,6 +193,105 @@ private extension SignInView {
     .disabled(isLoading)
     .accessibilityLabel(Text("Continue with Apple"))
     .padding(.top, 8)
+  }
+
+  // Footer with tappable Terms/Privacy presented as a slide-up sheet (local HTML)
+  var policyFooter: some View {
+    VStack(spacing: 8) {
+      Text("By continuing, you agree to the")
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+
+      HStack(spacing: 6) {
+        Button("Terms of Service") { activePolicy = .terms }
+//          .buttonStyle(LinkPill())
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+          .accessibilityLabel("View Terms of Service")
+
+        Text("and acknowledge the")
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+
+        Button("Privacy Policy") { activePolicy = .privacy }
+//          .buttonStyle(LinkPill())
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+          .accessibilityLabel("View Privacy Policy.")
+      }
+      .fixedSize()
+    }
+    .multilineTextAlignment(.center)
+  }
+}
+
+// MARK: - Policy Types (local filenames) & Sheet
+private extension SignInView {
+  enum Policy: Identifiable {
+    case terms, privacy
+    var id: String { title }
+    var title: String {
+      switch self {
+      case .terms:   return "Terms of Service"
+      case .privacy: return "Privacy Policy"
+      }
+    }
+    var filename: String {
+      switch self {
+      case .terms:   return "terms"
+      case .privacy: return "privacy"
+      }
+    }
+  }
+}
+
+// MARK: - Nested helper views to avoid global name collisions
+extension SignInView {
+  struct PolicySheet: View {
+    let title: String
+    let resourceName: String // e.g., "terms" or "privacy"
+
+    var body: some View {
+      NavigationStack {
+        PolicyWebView(resourceName: resourceName)
+          .navigationTitle(title)
+          .navigationBarTitleDisplayMode(.inline)
+      }
+    }
+  }
+
+  struct PolicyWebView: UIViewRepresentable {
+    let resourceName: String
+
+    func makeUIView(context: Context) -> WKWebView {
+      let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+      webView.scrollView.contentInsetAdjustmentBehavior = .automatic
+      webView.allowsBackForwardNavigationGestures = true
+
+      if let url = Bundle.main.url(forResource: resourceName, withExtension: "html") {
+        // Allow relative links (terms → privacy.html) to work offline
+        webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+      }
+      return webView
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+  }
+}
+
+// MARK: - Link-styled button for consistency with your UI
+private struct LinkPill: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.footnote.weight(.semibold))
+      .underline(true)
+      .padding(.horizontal, 4)
+      .padding(.vertical, 2)
+      .background(
+        Capsule().fill(.ultraThinMaterial)
+          .opacity(configuration.isPressed ? 1 : 0.6)
+      )
+      .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
   }
 }
 
