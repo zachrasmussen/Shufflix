@@ -3,7 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 10/02/25
-//  Updated: 2025-10-03 — Remove Utilities + Haptics; keep Stats, Autoplay, About, Danger Zone
+//  Production Refactor: 2025-10-03
 //
 
 import SwiftUI
@@ -65,9 +65,8 @@ struct SettingsView: View {
                 Section("About") {
                     KeyValueRow(key: "Version", value: appVersionString)
                     KeyValueRow(key: "Build",   value: appBuildString)
-//                    if let env = appEnvString {
-//                        KeyValueRow(key: "Environment", value: env)
-//                    }
+                    // If you set APP_ENV in Info.plist, uncomment:
+                    // if let env = appEnvString { KeyValueRow(key: "Environment", value: env) }
                 }
 
                 // MARK: Danger Zone
@@ -121,11 +120,15 @@ struct SettingsView: View {
                         .disabled(isSigningOut || isDeleting)
                 }
             }
-            // Initial stats load + live updates when relevant VM pieces change
+
+            // Initial stats load
             .task { await refreshStats() }
+
+            // Live updates without Equatable conformance:
             .onReceive(vm.$liked)      { _ in Task { await refreshStats() } }
             .onReceive(vm.$ratings)    { _ in Task { await refreshStats() } }
             .onReceive(vm.$watchedIDs) { _ in Task { await refreshStats() } }
+
             .overlay {
                 ZStack {
                     if isSigningOut || isDeleting {
@@ -151,6 +154,7 @@ struct SettingsView: View {
     }
 
     // MARK: - Stats refresh (LIKED-focused)
+    @MainActor
     private func refreshStats() async {
         isRefreshingStats = true
         defer { isRefreshingStats = false }
@@ -210,7 +214,6 @@ struct SettingsView: View {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
     }
     private var appEnvString: String? {
-        // Optional Info.plist key if you want to show "staging"/"prod"
         (Bundle.main.infoDictionary?["APP_ENV"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 }

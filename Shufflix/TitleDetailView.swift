@@ -3,7 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Refactored: 2025-10-02
+//  Production-hardened: 2025-10-03
 //
 
 import SwiftUI
@@ -52,6 +52,7 @@ struct TitleDetailView: View {
                         certification: certification,
                         pageIndex: $pageIndex
                     )
+                    .accessibilityAddTraits(trailerURL != nil ? [.startsMediaSession] : [])
 
                     // MARK: Stats Row
                     StatsRow(item: item)
@@ -87,15 +88,17 @@ struct TitleDetailView: View {
                     }
 
                     // MARK: Cast
-                    if isLoading {
-                        ProgressView("Loading details…")
-                            .frame(maxWidth: .infinity)
-                    } else if !cast.isEmpty {
-                        GlassCard {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Label("Cast", systemImage: "person.3")
-                                    .font(.headline)
-                                CastCarousel(cast: Array(cast.prefix(12)))
+                    Group {
+                        if isLoading {
+                            ProgressView("Loading details…")
+                                .frame(maxWidth: .infinity)
+                        } else if !cast.isEmpty {
+                            GlassCard {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Label("Cast", systemImage: "person.3")
+                                        .font(.headline)
+                                    CastCarousel(cast: Array(cast.prefix(12)))
+                                }
                             }
                         }
                     }
@@ -144,7 +147,8 @@ struct TitleDetailView: View {
             await loadTask?.value
         }
         .onDisappear {
-            // Stop playback if the view leaves (saves battery)
+            // Stop playback if the view leaves (saves battery & bandwidth)
+            loadTask?.cancel()
             trailerURL = nil
         }
         // Keep local rating in sync if something external changes it
@@ -164,16 +168,16 @@ struct TitleDetailView: View {
         // Run in parallel; only fetch remote bits we still need.
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
-                if let fetched = try? await TMDBService.fetchCast(for: item.id, mediaType: item.mediaType) {
-                    if Task.isCancelled { return }
+                if let fetched = try? await TMDBService.fetchCast(for: item.id, mediaType: item.mediaType),
+                   !Task.isCancelled {
                     await MainActor.run { self.cast = fetched }
                 }
             }
 
             group.addTask {
                 if self.providersState.isEmpty,
-                   let fetched = try? await TMDBService.watchProviders(for: self.item.id, mediaType: self.item.mediaType) {
-                    if Task.isCancelled { return }
+                   let fetched = try? await TMDBService.watchProviders(for: self.item.id, mediaType: self.item.mediaType),
+                   !Task.isCancelled {
                     await MainActor.run { self.providersState = dedupProviders(fetched) }
                 }
             }
@@ -181,21 +185,20 @@ struct TitleDetailView: View {
             group.addTask {
                 if self.trailerURL == nil,
                    let vids = try? await TMDBService.fetchVideos(for: self.item.id, mediaType: self.item.mediaType),
-                   let best = TMDBService.bestTrailerURL(from: vids) {
-                    if Task.isCancelled { return }
+                   let best = TMDBService.bestTrailerURL(from: vids),
+                   !Task.isCancelled {
                     await MainActor.run { self.trailerURL = best }
                 }
             }
 
             group.addTask {
                 if self.certification == nil,
-                   let cert = try? await TMDBService.fetchCertification(for: self.item.id, mediaType: self.item.mediaType) {
-                    if Task.isCancelled { return }
+                   let cert = try? await TMDBService.fetchCertification(for: self.item.id, mediaType: self.item.mediaType),
+                   !Task.isCancelled {
                     await MainActor.run { self.certification = cert }
                 }
             }
 
-            // drain group
             for await _ in group { if Task.isCancelled { return } }
         }
 
@@ -217,10 +220,10 @@ private struct PosterPager: View {
         TabView(selection: $pageIndex) {
             // Poster
             ZStack {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: url, transaction: .init(animation: .easeInOut(duration: 0.2))) { phase in
                     switch phase {
                     case .success(let img):
-                        img.resizable().scaledToFill().transition(.opacity)
+                        img.resizable().scaledToFill()
                     case .empty:
                         Rectangle().fill(Color.secondary.opacity(0.15))
                             .overlay(ProgressView().controlSize(.small))
@@ -354,9 +357,9 @@ private struct CollapsibleText: View {
                         .lineLimit(4)
                         .overlay(
                             GeometryReader { proxy in
-                                // Lightweight heuristic to detect truncation
                                 Color.clear.onAppear {
-                                    truncated = proxy.size.height > 72 // ~4 * 18pt
+                                    // ~4 * 18pt tall when untruncated with default body
+                                    truncated = proxy.size.height > 72
                                 }
                             }
                         )
@@ -367,6 +370,7 @@ private struct CollapsibleText: View {
                     withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
                 }
                 .font(.footnote.weight(.semibold))
+                .contentShape(Rectangle())
             }
         }
     }
@@ -411,7 +415,7 @@ private struct ProviderTile: View {
 
     var body: some View {
         Button {
-            // Deep-link to app if installed; otherwise universal link; otherwise Google
+            // Deep-link to app if installed; otherwise universal link; otherwise aggregator/Google
             StreamingLinker.open(
                 providerName: link.name,
                 title: item.name,
@@ -420,9 +424,9 @@ private struct ProviderTile: View {
         } label: {
             VStack(spacing: 8) {
                 if let logo = link.logoURL {
-                    AsyncImage(url: logo) { phase in
+                    AsyncImage(url: logo, transaction: .init(animation: .easeInOut(duration: 0.15))) { phase in
                         switch phase {
-                        case .success(let img): img.resizable().scaledToFit().transition(.opacity)
+                        case .success(let img): img.resizable().scaledToFit()
                         case .empty: Rectangle().fill(Color.secondary.opacity(0.15)).overlay(ProgressView().controlSize(.mini))
                         case .failure: Rectangle().fill(Color.secondary.opacity(0.15)).overlay(Image(systemName: "play.rectangle").imageScale(.medium))
                         @unknown default: Rectangle().fill(Color.secondary.opacity(0.15))

@@ -3,15 +3,15 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Updated 10/3 - tappable Terms/Privacy that slide up from local bundled HTML (no global name conflicts)
+//  Production Refactor: 2025-10-03
 //
 
 import SwiftUI
 import AuthenticationServices
 import Supabase
-import UIKit
 import CryptoKit
 import WebKit
+import Security
 
 struct SignInView: View {
   // MARK: - UI State
@@ -163,7 +163,7 @@ private extension SignInView {
       // Request basic scopes; keep it simple and privacy-friendly.
       request.requestedScopes = [.fullName, .email]
 
-      // Best-practice: include a nonce with OIDC providers.
+      // Include a nonce with OIDC providers to prevent replay.
       let nonce = Self.randomNonce()
       currentNonce = nonce
       request.nonce = Self.sha256(nonce)
@@ -204,9 +204,8 @@ private extension SignInView {
 
       HStack(spacing: 6) {
         Button("Terms of Service") { activePolicy = .terms }
-//          .buttonStyle(LinkPill())
-              .font(.footnote)
-              .foregroundStyle(.secondary)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
           .accessibilityLabel("View Terms of Service")
 
         Text("and acknowledge the")
@@ -214,9 +213,8 @@ private extension SignInView {
           .foregroundStyle(.secondary)
 
         Button("Privacy Policy") { activePolicy = .privacy }
-//          .buttonStyle(LinkPill())
-              .font(.footnote)
-              .foregroundStyle(.secondary)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
           .accessibilityLabel("View Privacy Policy.")
       }
       .fixedSize()
@@ -245,7 +243,7 @@ private extension SignInView {
   }
 }
 
-// MARK: - Nested helper views to avoid global name collisions
+// MARK: - Nested helper views (namespaced under SignInView)
 extension SignInView {
   struct PolicySheet: View {
     let title: String
@@ -264,12 +262,12 @@ extension SignInView {
     let resourceName: String
 
     func makeUIView(context: Context) -> WKWebView {
-      let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+      let config = WKWebViewConfiguration()
+      let webView = WKWebView(frame: .zero, configuration: config)
       webView.scrollView.contentInsetAdjustmentBehavior = .automatic
       webView.allowsBackForwardNavigationGestures = true
 
       if let url = Bundle.main.url(forResource: resourceName, withExtension: "html") {
-        // Allow relative links (terms → privacy.html) to work offline
         webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
       }
       return webView
@@ -279,7 +277,7 @@ extension SignInView {
   }
 }
 
-// MARK: - Link-styled button for consistency with your UI
+// MARK: - Optional link-pill style (kept for reuse)
 private struct LinkPill: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
@@ -351,26 +349,22 @@ private extension SignInView {
       return
     }
 
-    let nonce = currentNonce // may be nil if Apple didn’t echo back
+    let nonce = currentNonce // Apple may not echo it back; Supabase accepts original here.
     isLoading = true
 
     Task {
       do {
-        // Authenticate with Supabase using the Apple ID token
         let session = try await Supa.client.auth.signInWithIdToken(
           credentials: OpenIDConnectCredentials(
             provider: .apple,
             idToken: idToken,
-            nonce: nonce // pass the original nonce (unhashed)
+            nonce: nonce
           )
         )
-
-        // Success feedback
         await MainActor.run {
           isLoading = false
           errorMessage = nil
           Haptics.shared.success()
-          // Root auth router (ContentView) will swap to the deck
           print("✅ Signed in as \(session.user.id)")
         }
       } catch {
@@ -403,7 +397,7 @@ private extension SignInView {
   static func sha256(_ input: String) -> String {
     let data = Data(input.utf8)
     let hashed = SHA256.hash(data: data)
-    return hashed.compactMap { String(format: "%02x", $0) }.joined()
+    return hashed.map { String(format: "%02x", $0) }.joined()
   }
 }
 

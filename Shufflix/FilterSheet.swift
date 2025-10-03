@@ -3,27 +3,29 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Refactored: 2025-10-02
+//  Production-hardened: 2025-10-03
 //
 
 import SwiftUI
 
+// MARK: - Local Tunables
+
 private enum SearchTuning {
     static let minQueryLength = 2
-    static let debounceNanos: UInt64 = 300_000_000 // 300ms
+    static let debounce: Duration = .milliseconds(300)
     static let maxResults = 20
 }
 
+// MARK: - FilterSheet
+
 struct FilterSheet: View {
-    @EnvironmentObject var vm: DeckViewModel
+    @EnvironmentObject private var vm: DeckViewModel
     @Environment(\.dismiss) private var dismiss
 
-    // Caller supplies this to open Profile/Settings full screen.
-    // Example usage from parent:
-    // FilterSheet(onOpenSettings: { dismissSheetThenShowSettings() })
+    // Caller supplies this to open Profile/Settings
     var onOpenSettings: (() -> Void)? = nil
 
-    // Local working copy (mutate VM only on Apply)
+    // Local working copy of filters (mutate VM only on Apply)
     @State private var kind: ContentKind = .all
     @State private var selectedProviders: Set<String> = []
     @State private var selectedGenres: Set<String> = []
@@ -34,31 +36,27 @@ struct FilterSheet: View {
     @State private var isSearching = false
     @State private var searchError: String?
     @State private var searchTask: Task<Void, Never>?
-    @State private var lastSearchKey: String = ""   // (trimmed query + kind) for dedup
+    @State private var lastSearchKey: String = ""
     @State private var selectedItem: TitleItem?
 
-    // Motion
+    // Motion namespace for matchedGeometry chips
     @Namespace private var chipNS
 
     // Derived
     private var hasChanges: Bool {
-        (kind != vm.filters.kind) ||
-        (selectedProviders != vm.filters.providers) ||
-        (selectedGenres != vm.filters.genres)
-    }
-
-    // Simpler bg to avoid type-check slowdowns
-    private var bgGradient: LinearGradient {
-        LinearGradient(
-            gradient: Gradient(colors: [Color(UIColor.systemBackground), Color(UIColor.secondarySystemBackground)]),
-            startPoint: .top, endPoint: .bottom
-        )
+        kind != vm.filters.kind ||
+        selectedProviders != vm.filters.providers ||
+        selectedGenres != vm.filters.genres
     }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                bgGradient.ignoresSafeArea()
+                LinearGradient(
+                    colors: [Color(UIColor.systemBackground), Color(UIColor.secondarySystemBackground)],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .ignoresSafeArea()
 
                 ScrollView {
                     VStack(spacing: 16) {
@@ -66,51 +64,47 @@ struct FilterSheet: View {
                         // MARK: Search Results
                         if shouldShowResultsSection {
                             SectionCard(title: "Results", systemImage: "magnifyingglass") {
-                                if isSearching {
-                                    HStack(spacing: 10) {
-                                        ProgressView()
-                                        Text("Searching…").foregroundStyle(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .center)
-                                    .padding(.vertical, 8)
-                                } else if let err = searchError {
-                                    Label(err, systemImage: "exclamationmark.triangle")
-                                        .foregroundStyle(.secondary)
-                                } else if results.isEmpty {
-                                    Label("No results", systemImage: "film")
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    VStack(spacing: 8) {
-                                        ForEach(results) { item in
-                                            Button { selectedItem = item } label: {
-                                                ResultRow(item: item)
-                                            }
-                                            .buttonStyle(.plain)
-                                            .accessibilityLabel("\(item.name)\(item.year.isEmpty ? "" : ", \(item.year)")")
-                                            .accessibilityHint("Opens details")
+                                Group {
+                                    if isSearching {
+                                        ProgressView("Searching…")
+                                            .frame(maxWidth: .infinity, alignment: .center)
+                                            .padding(.vertical, 8)
+                                    } else if let err = searchError {
+                                        Label(err, systemImage: "exclamationmark.triangle")
+                                            .foregroundStyle(.secondary)
+                                    } else if results.isEmpty {
+                                        Label("No results", systemImage: "film")
+                                            .foregroundStyle(.secondary)
+                                    } else {
+                                        VStack(spacing: 8) {
+                                            ForEach(results) { item in
+                                                Button { selectedItem = item } label: {
+                                                    ResultRow(item: item)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .accessibilityLabel("\(item.name)\(item.year.isEmpty ? "" : ", \(item.year)")")
+                                                .accessibilityHint("Opens details")
 
-                                            if item.id != results.last?.id {
-                                                Divider().opacity(0.2)
+                                                if item.id != results.last?.id {
+                                                    Divider().opacity(0.2)
+                                                }
                                             }
                                         }
                                     }
                                 }
+                                .animation(.easeOut(duration: 0.2), value: isSearching)
+                                .animation(.easeOut(duration: 0.2), value: results.count)
                             }
                             .transition(.opacity.combined(with: .move(edge: .top)))
-                            .animation(.easeOut(duration: 0.22), value: results)
-                            .animation(.easeOut(duration: 0.22), value: isSearching)
                         }
 
                         // MARK: Content Type
                         SectionCard(title: "Type", systemImage: "square.stack.3d.down.forward") {
-                            SegmentedCapsulePicker(selection: $kind, cases: ContentKind.allCases) { k in
-                                Text(k.rawValue)
-                            }
-                            .accessibilityLabel("Content Type")
-                            .onChange(of: kind) { _ in
-                                // Re-run search immediately for tighter scope
-                                searchChanged(searchText, immediate: true)
-                            }
+                            SegmentedCapsulePicker(selection: $kind, cases: ContentKind.allCases)
+                                .accessibilityLabel("Content Type")
+                                .onChange(of: kind) { _ in
+                                    searchChanged(searchText, immediate: true)
+                                }
                         }
 
                         // MARK: Providers
@@ -119,21 +113,11 @@ struct FilterSheet: View {
                                 Label("No providers available yet", systemImage: "icloud.slash")
                                     .foregroundStyle(.secondary)
                             } else {
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 10) {
-                                        ForEach(vm.availableProviders, id: \.self) { name in
-                                            SelectChip(
-                                                title: name,
-                                                isSelected: selectedProviders.contains(name),
-                                                namespace: chipNS
-                                            ) {
-                                                toggle(name, in: &selectedProviders)
-                                            }
-                                        }
-                                    }
-                                    .padding(.vertical, 2)
-                                }
-
+                                ChipScroller(
+                                    items: vm.availableProviders,
+                                    selected: $selectedProviders,
+                                    ns: chipNS
+                                )
                                 if !selectedProviders.isEmpty {
                                     ActiveFilterSummary(
                                         count: selectedProviders.count,
@@ -151,21 +135,11 @@ struct FilterSheet: View {
                                 Label("No genres available yet", systemImage: "tray.slash")
                                     .foregroundStyle(.secondary)
                             } else {
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 10) {
-                                        ForEach(vm.availableGenres, id: \.self) { g in
-                                            SelectChip(
-                                                title: g,
-                                                isSelected: selectedGenres.contains(g),
-                                                namespace: chipNS
-                                            ) {
-                                                toggle(g, in: &selectedGenres)
-                                            }
-                                        }
-                                    }
-                                    .padding(.vertical, 2)
-                                }
-
+                                ChipScroller(
+                                    items: vm.availableGenres,
+                                    selected: $selectedGenres,
+                                    ns: chipNS
+                                )
                                 if !selectedGenres.isEmpty {
                                     ActiveFilterSummary(
                                         count: selectedGenres.count,
@@ -177,7 +151,7 @@ struct FilterSheet: View {
                             }
                         }
 
-                        Spacer(minLength: 100) // room above sticky bar
+                        Spacer(minLength: 100) // space above sticky bar
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
@@ -186,7 +160,6 @@ struct FilterSheet: View {
             .navigationTitle("Filters")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // Reset button
                 ToolbarItem(placement: .cancellationAction) {
                     Button(role: .destructive) {
                         Haptics.shared.light()
@@ -202,35 +175,24 @@ struct FilterSheet: View {
                     .accessibilityHint("Clear all filters")
                 }
 
-                // NEW: Gear button → delegate to parent
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        onOpenSettings?()
-                    } label: {
+                    Button { onOpenSettings?() } label: {
                         Image(systemName: "gearshape")
                     }
                     .accessibilityLabel("Profile & Settings")
                 }
             }
-            // Sticky Apply bar
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 ApplyBar(hasChanges: hasChanges) {
                     Haptics.shared.success()
-                    // Single assignment triggers DeckViewModel.didSet → applyFilters()
                     vm.filters = Filters(kind: kind, providers: selectedProviders, genres: selectedGenres)
                     dismiss()
                 }
             }
-            // Search
-            .searchable(
-                text: $searchText,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search movies & shows"
-            )
+            .searchable(text: $searchText, prompt: "Search movies & shows")
             .onChange(of: searchText) { newValue in
                 searchChanged(newValue)
             }
-            // Seed working copy
             .onAppear {
                 kind = vm.filters.kind
                 selectedProviders = vm.filters.providers
@@ -247,28 +209,28 @@ struct FilterSheet: View {
         isSearching || !results.isEmpty || (!searchText.isEmpty && searchText.count >= SearchTuning.minQueryLength)
     }
 
-    // MARK: - Search (single, debounced, cancellable)
+    // MARK: - Search (debounced & cancellable)
+
     private func searchChanged(_ newValue: String, immediate: Bool = false) {
         searchTask?.cancel()
         results.removeAll(keepingCapacity: true)
         searchError = nil
 
         let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count >= SearchTuning.minQueryLength else {
+        guard trimmed.count >= SearchTuning.minQueryLength else {
             isSearching = false
             lastSearchKey = ""
             return
         }
 
-        // Dedup identical query+kinds to avoid redundant fetches
-        let key = "\(normalize(trimmed))#\(kindKey(kind))"
+        let key = "\(normalize(trimmed))#\(kind.rawValue)"
         if key == lastSearchKey, !immediate { return }
         lastSearchKey = key
 
         searchTask = Task { @MainActor in
             isSearching = true
             do {
-                if !immediate { try await Task.sleep(nanoseconds: SearchTuning.debounceNanos) }
+                if !immediate { try await Task.sleep(for: SearchTuning.debounce) }
                 try Task.checkCancellation()
 
                 let scope: TMDBService.MediaTypeFilter = {
@@ -289,7 +251,7 @@ struct FilterSheet: View {
                 results = Array(hits.prefix(SearchTuning.maxResults))
                 searchError = nil
             } catch is CancellationError {
-                // cancelled
+                // cancelled silently
             } catch {
                 results = []
                 searchError = "Couldn’t fetch results."
@@ -299,281 +261,264 @@ struct FilterSheet: View {
     }
 
     // MARK: - Helpers
-    private func toggle<T: Hashable>(_ value: T, in set: inout Set<T>) {
-        if set.contains(value) {
-            withAnimation(.snappy) { set.remove(value) }
-        } else {
-            withAnimation(.snappy) { set.insert(value) }
-        }
-    }
 
-    private func kindKey(_ k: ContentKind) -> String {
-        switch k {
-        case .all: return "all"
-        case .movie: return "movie"
-        case .tv: return "tv"
-        }
-    }
-
-    /// Lowercased, diacritic-insensitive, alnum + spaces only, collapsed spaces.
     private func normalize(_ s: String) -> String {
         let folded = s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-        var chars = [Character](); chars.reserveCapacity(folded.count)
-        var lastWasSpace = false
-        for u in folded.unicodeScalars {
-            if CharacterSet.alphanumerics.contains(u) {
-                chars.append(Character(u))
-                lastWasSpace = false
-            } else if !lastWasSpace {
-                chars.append(" ")
-                lastWasSpace = true
-            }
-        }
-        if chars.last == " " { chars.removeLast() }
-        return String(chars).replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
+        return folded
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }
 
-// MARK: - Components
+// MARK: - Components (Self-contained, lightweight, compiler-friendly)
 
-/// A clean card-style container for sections
+/// Generic rounded "card" section with a title and optional SFSymbol.
 private struct SectionCard<Content: View>: View {
     let title: String
-    let systemImage: String
+    let systemImage: String?
     @ViewBuilder var content: Content
+
+    init(title: String, systemImage: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.systemImage = systemImage
+        self.content = content()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .imageScale(.medium)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 28, height: 28)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
+            HStack(spacing: 8) {
+                if let name = systemImage {
+                    Image(systemName: name)
+                        .imageScale(.medium)
+                        .foregroundStyle(.secondary)
+                }
                 Text(title)
-                    .font(.headline.weight(.semibold))
+                    .font(.headline)
                 Spacer()
             }
-            .padding(.bottom, 2)
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
 
-            content
+            VStack(alignment: .leading, spacing: 12) {
+                content
+            }
+            .padding(12)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06))
+            )
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.05), radius: 12, x: 0, y: 6)
-        )
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(title)
     }
 }
 
-/// A tighter, tactile chip with selection affordance
-private struct SelectChip: View {
-    let title: String
-    let isSelected: Bool
-    var namespace: Namespace.ID? = nil
-    let action: () -> Void
+/// Simple segmented control for an enum that is CaseIterable & RawRepresentable<String>.
+private struct SegmentedCapsulePicker<T: Hashable & CaseIterable & RawRepresentable>: View where T.RawValue == String {
+    @Binding var selection: T
+    let cases: T.AllCases
+
+    init(selection: Binding<T>, cases: T.AllCases) {
+        self._selection = selection
+        self.cases = cases
+    }
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .imageScale(.small)
-                        .transition(.scale.combined(with: .opacity))
+        HStack(spacing: 8) {
+            ForEach(Array(cases), id: \.self) { value in
+                Button {
+                    withAnimation(.snappy) { selection = value }
+                } label: {
+                    Text(value.rawValue)
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            Group {
+                                if value == selection {
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .fill(Color.accentColor.opacity(0.2))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                                .stroke(Color.accentColor.opacity(0.35), lineWidth: 1)
+                                        )
+                                } else {
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .fill(Color.clear)
+                                }
+                            }
+                        )
                 }
-                Text(title)
-                    .font(.footnote.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(value == selection ? .isSelected : [])
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                Group {
-                    if let ns = namespace, isSelected {
-                        Capsule()
-                            .fill(Color.accentColor.opacity(0.15))
-                            .matchedGeometryEffect(id: "chip-\(title)-bg", in: ns)
-                    } else {
-                        Capsule()
-                            .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.12))
-                    }
-                }
-            )
-            .overlay(
-                Capsule()
-                    .stroke(isSelected ? Color.accentColor : Color.primary.opacity(0.15), lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
-        .contentShape(Capsule())
-        .animation(.snappy, value: isSelected)
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Color.secondary.opacity(0.08))
+        )
     }
 }
 
-/// Compact result row for search results
+/// Minimal result row that only uses fields we know exist (name/year).
 private struct ResultRow: View {
     let item: TitleItem
 
     var body: some View {
         HStack(spacing: 12) {
-            AsyncImage(url: item.posterURL) { phase in
-                switch phase {
-                case .success(let img):
-                    img.resizable().scaledToFill()
-                case .failure:
-                    Rectangle().fill(Color.secondary.opacity(0.15))
-                        .overlay(Image(systemName: "film").imageScale(.large))
-                default:
-                    Rectangle().fill(Color.secondary.opacity(0.15))
-                }
-            }
-            .frame(width: 44, height: 66)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Placeholder poster thumb; avoids external dependencies.
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.secondary.opacity(0.15))
+                .frame(width: 46, height: 66)
+                .overlay(
+                    Image(systemName: "film")
+                        .imageScale(.small)
+                        .foregroundStyle(.secondary)
+                )
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(item.name)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+                    .font(.headline)
+                    .lineLimit(2)
                 if !item.year.isEmpty {
                     Text(item.year)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .font(.footnote)
                 }
             }
+
             Spacer()
             Image(systemName: "chevron.right")
                 .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.name)\(item.year.isEmpty ? "" : ", \(item.year)")")
     }
 }
 
-/// A segmented control with a capsule background
-private struct SegmentedCapsulePicker<T: Hashable, Label: View>: View {
-    @Binding var selection: T
-    let cases: [T]
-    let label: (T) -> Label
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ForEach(cases, id: \.self) { value in
-                Button {
-                    withAnimation(.snappy) { selection = value }
-                } label: {
-                    HStack(spacing: 6) {
-                        label(value)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                    }
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .background(
-                        ZStack {
-                            if selection == value {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(Color.accentColor.opacity(0.15))
-                                    .transition(.opacity.combined(with: .scale))
-                            }
-                        }
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(selection == value ? Color.accentColor : Color.primary.opacity(0.15), lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(6)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.secondary.opacity(0.08))
-        )
-        .accessibilityElement(children: .contain)
-    }
-}
-
-/// Thin summary of active filters with a one-tap clear
+/// Summary line like "3 providers — Clear"
 private struct ActiveFilterSummary: View {
     let count: Int
     let label: String
-    let clearAll: () -> Void
+    var clearAll: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal.decrease.circle")
-                .foregroundStyle(.secondary)
             Text("\(count) \(label) selected")
-                .font(.footnote.weight(.semibold))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button(role: .destructive, action: clearAll) {
+            Button(role: .destructive) {
+                clearAll()
+            } label: {
                 Text("Clear")
-                    .font(.footnote.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
             }
-            .buttonStyle(.borderless)
-            .accessibilityHint("Clear selected \(label)")
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.secondary.opacity(0.08))
-        )
     }
 }
 
-/// Sticky bottom bar with prominent Apply
+/// Sticky bottom bar with Apply button.
 private struct ApplyBar: View {
     let hasChanges: Bool
-    let onApply: () -> Void
+    var onApply: () -> Void
+
+    init(hasChanges: Bool, _ onApply: @escaping () -> Void) {
+        self.hasChanges = hasChanges
+        self.onApply = onApply
+    }
 
     var body: some View {
-        VStack(spacing: 10) {
-            Divider().overlay(Color.primary.opacity(0.1))
-
+        VStack(spacing: 0) {
+            Divider()
             HStack(spacing: 12) {
-                if !hasChanges {
-                    Label("No changes", systemImage: "checkmark.circle")
-                        .foregroundStyle(.secondary)
-                        .font(.footnote)
-                } else {
-                    Spacer(minLength: 0)
-                }
-
-                Button(action: onApply) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.seal.fill")
-                        Text("Apply")
-                            .fontWeight(.semibold)
-                    }
-                    .frame(maxWidth: 220)
-                    .padding(.vertical, 12)
-                    .padding(.horizontal, 16)
-                    .background(hasChanges ? Color.accentColor : Color.accentColor.opacity(0.5))
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                Image(systemName: hasChanges ? "slider.horizontal.3" : "checkmark.circle")
+                    .foregroundStyle(hasChanges ? .primary : .secondary)
+                Text(hasChanges ? "You have unsaved changes" : "No changes")
+                    .foregroundStyle(hasChanges ? .primary : .secondary)
+                Spacer()
+                Button {
+                    onApply()
+                } label: {
+                    Text("Apply")
+                        .font(.headline)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(hasChanges ? Color.accentColor : Color.gray.opacity(0.3))
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
                 }
                 .disabled(!hasChanges)
-                .accessibilityHint("Apply current filter selections")
+                .accessibilityHint("Apply selected filters")
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, 10)
-            .padding(.top, 6)
-            .background(.regularMaterial)
+            .padding(.vertical, 12)
+            .background(.thinMaterial)
         }
-        .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: -2)
-        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Reusable horizontal chip scroller
+private struct ChipScroller: View {
+    let items: [String]
+    @Binding var selected: Set<String>
+    let ns: Namespace.ID
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(items, id: \.self) { item in
+                    SelectChip(
+                        title: item,
+                        isSelected: selected.contains(item),
+                        namespace: ns
+                    ) {
+                        toggle(item)
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private func toggle(_ value: String) {
+        if selected.contains(value) {
+            withAnimation(.snappy) { selected.remove(value) }
+        } else {
+            withAnimation(.snappy) { selected.insert(value) }
+        }
+    }
+}
+
+/// Simple, fast pill chip with matchedGeometry support.
+private struct SelectChip: View {
+    let title: String
+    let isSelected: Bool
+    let namespace: Namespace.ID
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    Group {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(Color.accentColor.opacity(0.2))
+                                .matchedGeometryEffect(id: "chip.\(title)", in: namespace, isSource: true)
+                        } else {
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                        }
+                    }
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

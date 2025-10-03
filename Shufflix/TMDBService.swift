@@ -3,32 +3,66 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Restored: 2025-10-02 (static API with internal actor cache)
+//  Production-hardened: 2025-10-03
 //
 
 import Foundation
+import os
+
+// MARK: - TMDB Service
 
 enum TMDBService {
-    // MARK: - Infra
 
-    private static let base = URL(string: "https://api.themoviedb.org/3")!
+    // MARK: Infra
 
-    // Keep a tuned session (ephemeral is fine since TMDB supports HTTP caching headers too)
+    private static let log: Logger? = {
+        #if DEBUG
+        if #available(iOS 14.0, *) {
+            return Logger(subsystem: Bundle.main.bundleIdentifier ?? "Shufflix", category: "TMDB")
+        }
+        #endif
+        return nil
+    }()
+
+    private static let base = Constants.TMDB.baseURL
+
+    // Tuned URLSession. We rely on HTTP caching (ETag/Last-Modified) + URLCache.
     private static let session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
         cfg.requestCachePolicy = .returnCacheDataElseLoad
-        // Respect OS proxy / connectivity; no extra headers here (set per-request)
+        cfg.waitsForConnectivity = true
+        // A modest in-memory / on-disk cache (adjust as needed).
+        cfg.urlCache = URLCache(memoryCapacity: 20 * 1024 * 1024, diskCapacity: 150 * 1024 * 1024)
         return URLSession(configuration: cfg)
     }()
 
     private static let decoder: JSONDecoder = {
         let d = JSONDecoder()
+        // (TMDB dates are strings where used; keep defaults)
         return d
     }()
 
-    // MARK: - Cache (actor = thread-safe, no manual locking)
+    // MARK: Request coalescing
+
+    /// Deduplicate simultaneous identical requests so callers share the same Task.
+    private actor InFlight {
+        private var tasks: [URL: Task<Data, Error>] = [:]
+
+        func data(for url: URL, make: @escaping () -> Task<Data, Error>) async throws -> Data {
+            if let existing = tasks[url] {
+                return try await existing.value
+            }
+            let task = make()
+            tasks[url] = task
+            defer { tasks[url] = nil }
+            return try await task.value
+        }
+    }
+    private static let inFlight = InFlight()
+
+    // MARK: In-memory caches (thread-safe via actor)
 
     private actor Cache {
         var providerCache = [String: [ProviderLink]]()
@@ -57,7 +91,37 @@ enum TMDBService {
     }
     private static let cache = Cache()
 
-    // MARK: - HTTP
+    // MARK: Async Limiter (for API-friendly fan-out)
+
+    private actor AsyncLimiter {
+        private let limit: Int
+        private var running = 0
+        private var waitQueue: [CheckedContinuation<Void, Never>] = []
+
+        init(limit: Int) { self.limit = max(1, limit) }
+
+        func acquire() async {
+            if running < limit {
+                running += 1
+                return
+            }
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                waitQueue.append(cont)
+            }
+            running += 1
+        }
+
+        func release() {
+            running = max(0, running - 1)
+            if !waitQueue.isEmpty {
+                let cont = waitQueue.removeFirst()
+                cont.resume()
+            }
+        }
+    }
+    private static let providerLimiter = AsyncLimiter(limit: 8) // tune if needed
+
+    // MARK: URL building
 
     private static func components(_ path: String, _ items: [URLQueryItem] = []) -> URLComponents {
         var comps = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
@@ -70,58 +134,100 @@ enum TMDBService {
         return comps
     }
 
-    private struct TMDBErrorResponse: Decodable, Error {
+    // MARK: Errors
+
+    enum TMDBError: LocalizedError {
+        case http(status: Int, message: String)
+        case badURL
+        case decoding(Error)
+        case transport(URLError)
+        case unknown(Error)
+
+        var errorDescription: String? {
+            switch self {
+            case let .http(status, message): return "TMDB \(status): \(message)"
+            case .badURL: return "TMDB: bad URL"
+            case let .decoding(e): return "TMDB: decoding failed - \(e.localizedDescription)"
+            case let .transport(e): return e.localizedDescription
+            case let .unknown(e): return e.localizedDescription
+            }
+        }
+    }
+
+    private struct TMDBErrorResponse: Decodable {
         let status_message: String?
         let status_code: Int?
     }
 
-    /// Minimal retry (2 tries) with jitter for network/5xx; avoids over-retrying 4xx/user errors.
-    private static func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
-        let url = components(path, query).url!
+    // MARK: GET (retry + jitter + coalescing)
 
-        var lastError: Error?
-        for _ in 0..<2 {
-            do {
+    /// Minimal retry (2 attempts total) for transient transport/5xx; no retry on 4xx.
+    private static func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
+        guard let url = components(path, query).url else { throw TMDBError.badURL }
+
+        let fetchTask: () -> Task<Data, Error> = {
+            Task {
                 var req = URLRequest(url: url)
                 req.httpMethod = "GET"
                 req.setValue("application/json", forHTTPHeaderField: "Accept")
                 req.setValue(Constants.TMDB.defaultLanguage, forHTTPHeaderField: "Accept-Language")
 
-                let (data, resp) = try await session.data(for: req)
-
-                if let http = resp as? HTTPURLResponse, http.statusCode >= 300 {
-                    if let err = try? decoder.decode(TMDBErrorResponse.self, from: data) {
-                        throw NSError(domain: "TMDB", code: http.statusCode, userInfo: [
-                            NSLocalizedDescriptionKey: err.status_message ?? "TMDB error \(http.statusCode)"
-                        ])
+                var lastErr: Error?
+                for attempt in 0..<2 {
+                    try Task.checkCancellation()
+                    do {
+                        let (data, resp) = try await session.data(for: req)
+                        if let http = resp as? HTTPURLResponse, http.statusCode >= 300 {
+                            // Try to parse TMDB error body
+                            if let tmdbErr = try? decoder.decode(TMDBErrorResponse.self, from: data) {
+                                throw TMDBError.http(status: http.statusCode,
+                                                     message: tmdbErr.status_message ?? "HTTP \(http.statusCode)")
+                            } else {
+                                throw TMDBError.http(status: http.statusCode, message: "HTTP \(http.statusCode)")
+                            }
+                        }
+                        return data
+                    } catch {
+                        lastErr = error
+                        // Only retry on transient transport errors / 5xx (captured above)
+                        if case let TMDBError.http(status, _) = error {
+                            if status >= 500, attempt == 0 {
+                                // small exponential backoff with jitter 120–300ms
+                                try? await Task.sleep(nanoseconds: UInt64(120_000_000 + Int.random(in: 0...180) * 1_000_000))
+                                continue
+                            }
+                            throw error
+                        } else if let uerr = error as? URLError {
+                            switch uerr.code {
+                            case .timedOut, .cannotFindHost, .cannotConnectToHost,
+                                 .networkConnectionLost, .dnsLookupFailed, .notConnectedToInternet:
+                                if attempt == 0 {
+                                    try? await Task.sleep(nanoseconds: UInt64(120_000_000 + Int.random(in: 0...180) * 1_000_000))
+                                    continue
+                                }
+                            default: break
+                            }
+                            throw TMDBError.transport(uerr)
+                        } else if error is CancellationError {
+                            throw error
+                        } else if attempt == 0 {
+                            try? await Task.sleep(nanoseconds: 150_000_000)
+                            continue
+                        } else {
+                            throw TMDBError.unknown(error)
+                        }
                     }
-                    throw NSError(domain: "TMDB", code: http.statusCode, userInfo: [
-                        NSLocalizedDescriptionKey: "HTTP \(http.statusCode) from TMDB"
-                    ])
                 }
-
-                return try decoder.decode(T.self, from: data)
-            } catch {
-                lastError = error
-                // Retry only on transient conditions
-                if let urlErr = error as? URLError {
-                    switch urlErr.code {
-                    case .timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost, .dnsLookupFailed, .notConnectedToInternet:
-                        // jitter 120–240ms
-                        try? await Task.sleep(nanoseconds: 120_000_000 + UInt64(Int.random(in: 0...120)) * 1_000_000)
-                        continue
-                    default:
-                        throw error
-                    }
-                }
-                // If it's an HTTP error, we already threw above; otherwise just propagate
-                break
+                throw TMDBError.unknown(lastErr ?? NSError(domain: "TMDB", code: -1))
             }
         }
-        throw lastError ?? NSError(domain: "TMDB", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unknown TMDB error"])
+
+        let data = try await inFlight.data(for: url, make: fetchTask)
+        do { return try decoder.decode(T.self, from: data) }
+        catch { throw TMDBError.decoding(error) }
     }
 
-    // MARK: - DTOs
+    // MARK: DTOs
 
     struct DiscoverResult: Decodable { let results: [Media] }
 
@@ -156,7 +262,7 @@ enum TMDBService {
         let name: String
     }
 
-    // For movies
+    // Movies
     struct ReleaseDatesResponse: Decodable {
         struct Result: Decodable {
             let iso_3166_1: String
@@ -166,7 +272,7 @@ enum TMDBService {
         let results: [Result]
     }
 
-    // For TV
+    // TV
     struct ContentRatingsResponse: Decodable {
         struct Result: Decodable {
             let iso_3166_1: String
@@ -179,27 +285,24 @@ enum TMDBService {
     struct CastPerson: Decodable { let name: String; let character: String? }
     struct CastMember: Hashable { let name: String; let character: String? }
 
-    // MARK: - Provider Brand Normalization
+    // MARK: Provider Brand Normalization
+
+    private static let normalizeRegexes: [NSRegularExpression] = {
+        return [
+            try! NSRegularExpression(pattern: #"(?i)\s+(with\s+ads|basic\s+with\s+ads|standard|basic|premium|uhd|4k|hd|originals?|channel|channels|add-?on|subscription|trial)\s*$"#),
+            try! NSRegularExpression(pattern: #"(?i)\s+(on|via|through)\s+.*$"#),
+            try! NSRegularExpression(pattern: #"(?i)\s*\((ads?|via.*|channel|premium|originals?)\)\s*$"#)
+        ]
+    }()
 
     private static func canonicalizeProviderName(_ raw: String) -> String {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Strip qualifiers/parentheticals/“via …”
-        let regexes: [NSRegularExpression] = [
-            // suffix descriptors
-            try! NSRegularExpression(pattern: #"(?i)\s+(with\s+ads|basic\s+with\s+ads|standard|basic|premium|uhd|4k|hd|originals?|channel|channels|add-?on|subscription|trial)\s*$"#),
-            // via/on/through phrases
-            try! NSRegularExpression(pattern: #"(?i)\s+(on|via|through)\s+.*$"#),
-            // parentheticals
-            try! NSRegularExpression(pattern: #"(?i)\s*\((ads?|via.*|channel|premium|originals?)\)\s*$"#)
-        ]
-        for r in regexes {
+        for r in normalizeRegexes {
             s = r.stringByReplacingMatches(in: s, options: [], range: NSRange(s.startIndex..., in: s), withTemplate: "")
         }
-
         let lower = s.lowercased()
         if lower.contains("paramount") { return "Paramount+" }
-        if lower.contains("hbo max") || lower == "max" || lower.contains("max") { return "Max" }
+        if lower == "max" || lower.contains("hbo max") || lower.contains(" max ") { return "Max" }
         if lower.contains("prime video") || lower.contains("amazon") { return "Prime Video" }
         if lower.contains("apple tv+") || lower.contains("apple tv plus") { return "Apple TV+" }
         if lower.contains("disney") { return "Disney+" }
@@ -211,30 +314,29 @@ enum TMDBService {
         if lower.contains("tubi") { return "Tubi" }
         if lower.contains("pluto") { return "Pluto TV" }
         if lower.contains("youtube") { return "YouTube" }
-
         s = collapseSpaces(s)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - Endpoints
+    // MARK: Endpoints
 
     static func trending(window: String = "week", page: Int = 1) async throws -> [Media] {
         let res: DiscoverResult = try await get("trending/all/\(window)", query: [
-            URLQueryItem(name: "page", value: String(page))
+            URLQueryItem(name: "page", value: String(max(1, page)))
         ])
         return res.results
     }
 
     static func popular(_ type: MediaType, page: Int = 1) async throws -> [Media] {
         let res: DiscoverResult = try await get("\(type.rawValue)/popular", query: [
-            URLQueryItem(name: "page", value: String(page))
+            URLQueryItem(name: "page", value: String(max(1, page)))
         ])
         return res.results
     }
 
     static func topRated(_ type: MediaType, page: Int = 1) async throws -> [Media] {
         let res: DiscoverResult = try await get("\(type.rawValue)/top_rated", query: [
-            URLQueryItem(name: "page", value: String(page))
+            URLQueryItem(name: "page", value: String(max(1, page)))
         ])
         return res.results
     }
@@ -246,7 +348,7 @@ enum TMDBService {
         watchRegion: String = Constants.TMDB.defaultRegion
     ) async throws -> [Media] {
         var q: [URLQueryItem] = [
-            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "page", value: String(max(1, page))),
             URLQueryItem(name: "include_adult", value: "false"),
             URLQueryItem(name: "with_watch_monetization_types", value: "flatrate|free|ads|rent|buy"),
             URLQueryItem(name: "watch_region", value: watchRegion),
@@ -264,7 +366,7 @@ enum TMDBService {
         let res: DiscoverResult = try await get("search/multi", query: [
             URLQueryItem(name: "include_adult", value: "false"),
             URLQueryItem(name: "query", value: query),
-            URLQueryItem(name: "page", value: String(page))
+            URLQueryItem(name: "page", value: String(max(1, page)))
         ])
         return res.results
     }
@@ -273,7 +375,7 @@ enum TMDBService {
         let res: DiscoverResult = try await get("search/tv", query: [
             URLQueryItem(name: "include_adult", value: "false"),
             URLQueryItem(name: "query", value: query),
-            URLQueryItem(name: "page", value: String(page))
+            URLQueryItem(name: "page", value: String(max(1, page)))
         ])
         return res.results
     }
@@ -282,18 +384,19 @@ enum TMDBService {
         let res: DiscoverResult = try await get("search/movie", query: [
             URLQueryItem(name: "include_adult", value: "false"),
             URLQueryItem(name: "query", value: query),
-            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "page", value: String(max(1, page))),
             URLQueryItem(name: "region", value: region)
         ])
         return res.results
     }
 
-    // Providers (cached)
+    // Providers (cached + limited fan-out)
     static func watchProviders(for id: Int, mediaType: MediaType) async throws -> [ProviderLink] {
         let key = "prov:\(mediaType.rawValue)#\(id)"
-        if let cached = await cache.providers(for: key) {
-            return cached
-        }
+        if let cached = await cache.providers(for: key) { return cached }
+
+        await providerLimiter.acquire()
+        defer { Task { await providerLimiter.release() } }   // ✅ defer-safe release
 
         let env: ProviderEnvelope = try await get("\(mediaType.rawValue)/\(id)/watch/providers")
         let us = env.results[Constants.TMDB.defaultRegion]?.flatrate ?? []
@@ -323,9 +426,7 @@ enum TMDBService {
     // Credits (cached)
     static func fetchCast(for id: Int, mediaType: MediaType) async throws -> [CastMember] {
         let key = "cast:\(mediaType.rawValue)#\(id)"
-        if let cached = await cache.cast(for: key) {
-            return cached
-        }
+        if let cached = await cache.cast(for: key) { return cached }
 
         let credits: CreditsResponse = try await get("\(mediaType.rawValue)/\(id)/credits")
         let mapped = credits.cast.map { CastMember(name: $0.name, character: $0.character) }
@@ -341,12 +442,11 @@ enum TMDBService {
         return await mapToTitleItems(res.results)
     }
 
-    // Details overview (cached, used for backfill)
+    // Details overview (cached)
     static func fetchDetailsOverview(for id: Int, mediaType: MediaType) async throws -> String {
         let key = "details:\(mediaType.rawValue)#\(id)"
-        if let cached = await cache.details(for: key) {
-            return cached
-        }
+        if let cached = await cache.details(for: key) { return cached }
+
         struct Details: Decodable { let overview: String? }
         let details: Details = try await get("\(mediaType.rawValue)/\(id)")
         let ov = details.overview ?? ""
@@ -357,9 +457,8 @@ enum TMDBService {
     // Videos (cached)
     static func fetchVideos(for id: Int, mediaType: MediaType) async throws -> [Video] {
         let key = "vid:\(mediaType.rawValue)#\(id)"
-        if let cached = await cache.videos(for: key) {
-            return cached
-        }
+        if let cached = await cache.videos(for: key) { return cached }
+
         let res: VideosResponse = try await get("\(mediaType.rawValue)/\(id)/videos")
         await cache.setVideos(res.results, for: key)
         return res.results
@@ -379,34 +478,30 @@ enum TMDBService {
         return URL(string: "https://www.youtube.com/embed/\(key)?playsinline=1&rel=0")
     }
 
-    // MARK: - Mapping
+    // MARK: Mapping
 
     /// Map TMDB `Media` results to your `TitleItem` model.
     /// Fetches providers with a **capped concurrency** to reduce API burst/load.
     static func mapToTitleItems(_ media: [Media]) async -> [TitleItem] {
         let slice = Array(media.prefix(60))
-        let maxConcurrentProviderCalls = 8
 
         var items: [TitleItem] = []
         items.reserveCapacity(slice.count)
 
         await withTaskGroup(of: TitleItem?.self) { group in
-            // simple FIFO cap: add, and when at cap, await one before adding next
-            var inFlight = 0
-
             for m in slice {
-                if inFlight >= maxConcurrentProviderCalls {
-                    if let r = await group.next(), let ti = r { items.append(ti) }
-                    inFlight -= 1
-                }
-
                 group.addTask {
+                    try? Task.checkCancellation()
                     let type: MediaType = inferType(from: m)
                     let name = m.title ?? m.name ?? "Untitled"
                     let year = (m.release_date ?? m.first_air_date)?.prefix(4).description ?? ""
                     let poster = Constants.imageURL(path: m.poster_path, size: .w500)
                     let genreNames = (m.genre_ids ?? []).compactMap { Constants.genreMap[$0] }
-                    let providers = (try? await watchProviders(for: m.id, mediaType: type)) ?? []
+
+                    // Throttle provider fetches
+                    let providers = (try? await watchProviders(for: m.id, mediaType: type)) ?? []   // single throttle inside watchProviders
+
+
                     return TitleItem(
                         id: m.id,
                         mediaType: type,
@@ -420,10 +515,8 @@ enum TMDBService {
                         tmdbVoteCount: m.vote_count
                     )
                 }
-                inFlight += 1
             }
-
-            while let r = await group.next() {
+            for await r in group {
                 if let ti = r { items.append(ti) }
             }
         }
@@ -431,7 +524,7 @@ enum TMDBService {
         return items
     }
 
-    // MARK: - Certifications
+    // MARK: Certifications
 
     static func fetchCertification(for id: Int, mediaType: MediaType) async throws -> String? {
         switch mediaType {
@@ -451,7 +544,7 @@ enum TMDBService {
         return nil
     }
 
-    // MARK: - Improved Search (recall-first + exact-match rescue)
+    // MARK: Improved Search (recall-first + exact-match rescue)
 
     enum MediaTypeFilter { case all, movie, tv }
 
@@ -469,14 +562,21 @@ enum TMDBService {
 
         switch type {
         case .all:
-            var acc: [Media] = []
-            for page in 1...pageLimit {
-                acc += try await searchMulti(query: trimmed, page: page)
+            // Parallelize first 3 pages of /multi (bounded fan-out)
+            let pages = max(1, pageLimit)
+            var multi: [Media] = []
+            try await withThrowingTaskGroup(of: [Media].self) { group in
+                for p in 1...pages {
+                    group.addTask { try await searchMulti(query: trimmed, page: p) }
+                }
+                for try await page in group { multi += page }
             }
-            buckets.append(acc)
-            // cheap backups to improve recall for classics
-            buckets.append(try await searchTV(query: trimmed, page: 1))
-            buckets.append(try await searchMovie(query: trimmed, page: 1, region: region))
+            buckets.append(multi)
+            // small backups to improve recall for classics
+            async let tv1  = searchTV(query: trimmed, page: 1)
+            async let mov1 = searchMovie(query: trimmed, page: 1, region: region)
+            buckets.append(try await tv1)
+            buckets.append(try await mov1)
 
         case .tv:
             var acc: [Media] = []
@@ -559,7 +659,7 @@ enum TMDBService {
         return out
     }
 
-    // MARK: - Helpers
+    // MARK: Helpers
 
     private static func inferType(from m: Media) -> MediaType {
         if m.media_type == "tv" { return .tv }

@@ -3,17 +3,13 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Refactored: 2025-10-02
+//  Production-hardened: 2025-10-03
 //
 
 import SwiftUI
 import WebKit
 
 struct YouTubeWebView: UIViewRepresentable {
-    /// Accepts any of:
-    ///  - https://www.youtube.com/watch?v=VIDEO_ID
-    ///  - https://youtu.be/VIDEO_ID
-    ///  - https://www.youtube.com/embed/VIDEO_ID
     let url: URL
 
     // MARK: - UIViewRepresentable
@@ -22,15 +18,12 @@ struct YouTubeWebView: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         #if os(iOS)
-        // Autoplay compliance (muted) + modern JS allowed.
         if #available(iOS 14.0, *) {
             config.defaultWebpagePreferences.allowsContentJavaScript = true
         }
-        // Historically useful to disable “user action” requirement when we start muted.
         config.mediaTypesRequiringUserActionForPlayback = []
         #endif
 
-        // User scripts & bridge
         let ucc = WKUserContentController()
         ucc.add(context.coordinator, name: Coordinator.bridgeName)
         ucc.addUserScript(.init(source: Self.injectedCSS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -41,29 +34,24 @@ struct YouTubeWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
         webView.isOpaque = false
         webView.backgroundColor = .clear
 
         context.coordinator.webView = webView
-
-        // Load sanitized embed
-        let embedURL = Self.normalizedEmbedURL(from: url)
-        webView.load(URLRequest(url: embedURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
+        context.coordinator.load(embedURL: Self.normalizedEmbedURL(from: url))
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // If the URL changes, reload with the new, normalized embed.
         let desired = Self.normalizedEmbedURL(from: url)
         if webView.url != desired {
-            context.coordinator.hasReloadedOnce = false
-            webView.load(URLRequest(url: desired, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
+            context.coordinator.resetRetries()
+            context.coordinator.load(embedURL: desired)
         }
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     // MARK: - Coordinator
 
@@ -71,28 +59,48 @@ struct YouTubeWebView: UIViewRepresentable {
         static let bridgeName = "ytBridge"
 
         weak var webView: WKWebView?
-        var hasReloadedOnce = false
+        private var retryCount = 0
+        private let maxRetries = 3
+
+        func resetRetries() { retryCount = 0 }
+
+        func load(embedURL: URL) {
+            let req = URLRequest(url: embedURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+            webView?.load(req)
+        }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.name == Self.bridgeName else { return }
-            guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+            guard message.name == Self.bridgeName,
+                  let body = message.body as? [String: Any],
+                  let type = body["type"] as? String else { return }
 
             switch type {
             case "ready":
-                // Player ready: ask JS to unmute (we start muted to satisfy autoplay).
                 webView?.evaluateJavaScript("window.__ytq?.push({cmd:'unmute'});", completionHandler: nil)
+                retryCount = 0 // reset once healthy
 
             case "error":
-                // One-time silent retry fixes intermittent flakiness.
-                retryOnce()
+                if let data = body["data"] as? [String: Any], let code = data["code"] {
+                    #if DEBUG
+                    print("[YouTubeWebView] error code:", code)
+                    #endif
+                }
+                retryWithBackoff()
 
-            default:
-                break
+            default: break
             }
         }
 
-        // Prevent leaving the embed origin (e.g., attempts to open watch pages).
-        func webView(_ webView: WKWebView, decidePolicyFor navAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            retryWithBackoff()
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            retryWithBackoff()
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if let url = navAction.request.url, !Self.isAllowed(url: url) {
                 decisionHandler(.cancel)
                 return
@@ -100,23 +108,20 @@ struct YouTubeWebView: UIViewRepresentable {
             decisionHandler(.allow)
         }
 
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            retryOnce()
-        }
-
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            retryOnce()
-        }
-
-        private func retryOnce() {
-            guard !hasReloadedOnce, let webView else { return }
-            hasReloadedOnce = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { webView.reload() }
+        private func retryWithBackoff() {
+            guard retryCount < maxRetries, let webView, let failingURL = webView.url else { return }
+            retryCount += 1
+            let delay = pow(2.0, Double(retryCount)) * 0.3 // 0.3s, 0.6s, 1.2s
+            #if DEBUG
+            print("[YouTubeWebView] retry \(retryCount) in \(delay)s")
+            #endif
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                webView.reload()
+            }
         }
 
         private static func isAllowed(url: URL) -> Bool {
             guard let host = url.host?.lowercased() else { return false }
-            // Allow the embed, youtube assets, data & about URLs used by the player.
             if host.hasSuffix("youtube.com") || host.hasSuffix("ytimg.com") { return true }
             if url.scheme == "about" || url.scheme == "data" { return true }
             return false
@@ -125,7 +130,6 @@ struct YouTubeWebView: UIViewRepresentable {
 
     // MARK: - Helpers
 
-    /// Convert watch/shorts/normal links into a stable /embed URL with safe params.
     private static func normalizedEmbedURL(from input: URL) -> URL {
         let vid = extractVideoID(from: input) ?? input.lastPathComponent
         var comps = URLComponents()
@@ -139,12 +143,11 @@ struct YouTubeWebView: UIViewRepresentable {
             URLQueryItem(name: "rel", value: "0"),
             URLQueryItem(name: "modestbranding", value: "1"),
             URLQueryItem(name: "enablejsapi", value: "1"),
-            URLQueryItem(name: "origin", value: "https://shufflix.local")
+            URLQueryItem(name: "origin", value: "https://shufflix.app") // ✅ safer origin
         ]
         return comps.url ?? input
     }
 
-    /// Try common URL shapes to grab the YouTube video id.
     private static func extractVideoID(from url: URL) -> String? {
         let host = (url.host ?? "").lowercased()
 
@@ -154,15 +157,12 @@ struct YouTubeWebView: UIViewRepresentable {
                let v = comps.queryItems?.first(where: { $0.name == "v" })?.value {
                 return v
             }
-            // /embed/ID or /shorts/ID → lastPathComponent
             if url.path.contains("/embed/") || url.path.contains("/shorts/") {
                 return url.lastPathComponent
             }
         } else if host.contains("youtu.be") {
             return url.lastPathComponent
         }
-
-        // Fallback: parse v= anywhere
         if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
            let v = comps.queryItems?.first(where: { $0.name == "v" })?.value {
             return v
@@ -172,7 +172,6 @@ struct YouTubeWebView: UIViewRepresentable {
 
     // MARK: - Injected CSS & JS
 
-    /// Make the player fill, avoid flashes, keep background clean.
     private static let injectedCSS = """
     const css = `
       html, body { margin:0; padding:0; background:transparent; height:100%; }
@@ -184,11 +183,6 @@ struct YouTubeWebView: UIViewRepresentable {
     document.documentElement.appendChild(style);
     """
 
-    /// JS bridge:
-    ///  - Loads IFrame API
-    ///  - Boots a YT.Player over the existing iframe
-    ///  - Posts messages back to iOS on ready/error/state
-    ///  - Tiny command queue to unmute on ready
     private static let injectedJSBridge = """
     (function() {
       if (window.__YT_BRIDGE_LOADED__) return;

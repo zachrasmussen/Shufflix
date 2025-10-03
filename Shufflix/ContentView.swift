@@ -3,7 +3,7 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Refactored: 2025-10-02
+//  Production Refactor: 2025-10-03
 //
 
 import SwiftUI
@@ -18,7 +18,7 @@ struct DeckRootView: View {
     @State private var selected: TitleItem?
     @State private var showFilters = false
     @State private var showSettings = false
-    @State private var didPrimeDeck = false   // ensure one-time initial top-up
+    @State private var didPrimeDeck = false
 
     var body: some View {
         NavigationStack {
@@ -30,85 +30,42 @@ struct DeckRootView: View {
                 ZStack {
                     Color(UIColor.systemBackground).ignoresSafeArea()
 
-                    // 1) Quiet shell while NOT primed (avoid flicker)
                     if !vm.isPrimed && vm.currentDeck().isEmpty {
-                        VStack { Spacer(minLength: 0) }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    // 2) Error state
+                        // Quiet shell before first prime to avoid flicker
+                        Color.clear
                     } else if let err = vm.errorMessage, vm.currentDeck().isEmpty {
-                        VStack(spacing: 12) {
-                            Text("Oops: \(err)")
-                                .multilineTextAlignment(.center)
-                            Button("Retry") { reloadMore() }
-                                .buttonStyle(.borderedProminent)
-                        }
-                        .padding()
-
-                    // 3) Empty (caught up)
+                        ErrorStateView(message: err, onRetry: { reloadMore() })
+                            .padding()
                     } else if vm.currentDeck().isEmpty {
-                        VStack(spacing: 12) {
-                            Text("You’re all caught up")
-                                .font(.title2.weight(.semibold))
-                            Button("Reload") { reloadMore() }
-                                .buttonStyle(.borderedProminent)
-                        }
-
-                    // 4) Deck
+                        EmptyStateView(onReload: { reloadMore() })
                     } else {
-                        VStack(spacing: 12) {
-                            DeckStack(
-                                items: vm.currentDeck(),
-                                cardSize: cardSize,
-                                onTap: { item in selected = item },
-                                onAction: { item, like in vm.swipe(item, liked: like) }
-                            )
-                            .frame(width: cardWidth, height: cardHeight)
-                            .frame(maxWidth: .infinity, alignment: .top)
-                            .padding(.top, 16)
-                            .padding(.horizontal)
-
-                            Spacer(minLength: 0)
-                        }
-                        .opacity(vm.isPrimed ? 1 : 0)
-                        .animation(.easeOut(duration: 0.15), value: vm.isPrimed)
+                        DeckAreaView(
+                            items: vm.currentDeck(),
+                            cardSize: cardSize,
+                            width: cardWidth,
+                            height: cardHeight,
+                            isPrimed: vm.isPrimed,
+                            onTap: { selected = $0 },
+                            onSwipe: { item, like in vm.swipe(item, liked: like) }
+                        )
                     }
                 }
                 .safeAreaInset(edge: .bottom) {
-                    HStack(spacing: 44) {
-                        Button {
+                    BottomBar(
+                        canAct: vm.isPrimed,
+                        onSkip: {
                             if let top = vm.currentDeck().last { vm.swipe(top, liked: false) }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(.white, Color.red)
-                                .font(.system(size: 75, weight: .bold))
-                                .shadow(radius: 6, y: 3)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Skip")
-                        .disabled(!vm.isPrimed)
-
-                        Button {
+                        },
+                        onLike: {
                             if let top = vm.currentDeck().last { vm.swipe(top, liked: true) }
-                        } label: {
-                            Image(systemName: "heart.circle.fill")
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(.white, Color.blue)
-                                .font(.system(size: 75, weight: .bold))
-                                .shadow(radius: 6, y: 3)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Like")
-                        .disabled(!vm.isPrimed)
-                    }
+                    )
                     .padding(.vertical, 10)
                 }
             }
             .navigationTitle("Shufflix")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // Filters (leading)
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button { showFilters = true } label: {
                         Image(systemName: "line.3.horizontal.decrease.circle")
@@ -116,7 +73,6 @@ struct DeckRootView: View {
                     }
                     .accessibilityLabel("Filters")
                 }
-                // Liked (trailing)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink { LikedListView() } label: {
                         Image(systemName: vm.liked.isEmpty ? "heart" : "heart.fill")
@@ -145,7 +101,7 @@ struct DeckRootView: View {
             .navigationDestination(item: $selected) { item in
                 TitleDetailView(item: item)
             }
-            .refreshable { await reloadMoreAsync() }
+            .refreshable { await vm.loadMore() }
             .onAppear {
                 if !didPrimeDeck {
                     didPrimeDeck = true
@@ -158,20 +114,103 @@ struct DeckRootView: View {
         }
     }
 
-    // MARK: - Async wrappers
+    // MARK: - Async
 
     private func primeDeckIfNeeded() {
-        if vm.currentDeck().count < 6 {
-            Task { await vm.loadMore() }
-        }
+        guard vm.currentDeck().count < 6 else { return }
+        Task { await vm.loadMore() }
     }
 
     private func reloadMore() {
         Task { await vm.loadMore() }
     }
+}
 
-    private func reloadMoreAsync() async {
-        await vm.loadMore()
+// MARK: - Subviews (struct-based to avoid opaque-return helpers)
+
+private struct ErrorStateView: View {
+    let message: String
+    let onRetry: () -> Void
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("Oops: \(message)")
+                .multilineTextAlignment(.center)
+            Button("Retry", action: onRetry)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+private struct EmptyStateView: View {
+    let onReload: () -> Void
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("You’re all caught up")
+                .font(.title2.weight(.semibold))
+            Button("Reload", action: onReload)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+private struct DeckAreaView: View {
+    let items: [TitleItem]
+    let cardSize: CGSize
+    let width: CGFloat
+    let height: CGFloat
+    let isPrimed: Bool
+    let onTap: (TitleItem) -> Void
+    let onSwipe: (TitleItem, Bool) -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            DeckStack(
+                items: items,
+                cardSize: cardSize,
+                onTap: onTap,
+                onAction: onSwipe
+            )
+            .frame(width: width, height: height)
+            .frame(maxWidth: .infinity, alignment: .top)
+            .padding(.top, 16)
+            .padding(.horizontal)
+
+            Spacer(minLength: 0)
+        }
+        .opacity(isPrimed ? 1 : 0)
+        .animation(.easeOut(duration: 0.15), value: isPrimed)
+    }
+}
+
+private struct BottomBar: View {
+    let canAct: Bool
+    let onSkip: () -> Void
+    let onLike: () -> Void
+
+    var body: some View {
+        HStack(spacing: 44) {
+            Button(action: onSkip) {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.red)
+                    .font(.system(size: 75, weight: .bold))
+                    .shadow(radius: 6, y: 3)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Skip")
+            .disabled(!canAct)
+
+            Button(action: onLike) {
+                Image(systemName: "heart.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.blue)
+                    .font(.system(size: 75, weight: .bold))
+                    .shadow(radius: 6, y: 3)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Like")
+            .disabled(!canAct)
+        }
     }
 }
 
@@ -195,7 +234,6 @@ struct DeckStack: View {
                     isTop: isTop
                 )
                 .zIndex(Double(index))
-                .animation(nil, value: items.count)
             }
         }
     }
@@ -215,32 +253,15 @@ struct SwipeCard: View {
     @State private var didCrossThreshold = false
     @State private var removed = false
 
-    private var dragPct: CGFloat {
-        let w = max(-1, min(1, offset.width / 200))
-        return w
-    }
+    private var dragPct: CGFloat { max(-1, min(1, offset.width / 200)) }
     private var rotation: Angle { .degrees(Double(dragPct) * 8) }
-    private var likeOpacity: Double { max(0, Double(dragPct)) }
-    private var nopeOpacity: Double { max(0, Double(-dragPct)) }
-
-    @ViewBuilder
-    private func stamp(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 28, weight: .heavy, design: .rounded))
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .foregroundColor(color)
-            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(color, lineWidth: 3))
-            .rotationEffect(.degrees(-12))
-            .shadow(color: color.opacity(0.2), radius: 6, y: 3)
-    }
 
     var body: some View {
         ZStack {
             AsyncImage(url: item.posterURL) { phase in
                 switch phase {
                 case .success(let img):
-                    img.resizable()
-                        .scaledToFill()
+                    img.resizable().scaledToFill()
                         .offset(x: offset.width * 0.07)
                 case .empty:
                     Rectangle().fill(Color.secondary.opacity(0.15))
@@ -254,11 +275,14 @@ struct SwipeCard: View {
             }
             .clipped()
 
+            // LIKE / NOPE overlays
             VStack {
                 HStack {
-                    stamp("LIKE", color: .green).opacity(likeOpacity)
+                    CardStamp(text: "LIKE", color: .green)
+                        .opacity(max(0, Double(dragPct)))
                     Spacer()
-                    stamp("NOPE", color: .red).opacity(nopeOpacity)
+                    CardStamp(text: "NOPE", color: .red)
+                        .opacity(max(0, Double(-dragPct)))
                 }
                 .padding(12)
                 Spacer()
@@ -271,69 +295,84 @@ struct SwipeCard: View {
         .offset(offset)
         .animation(.interactiveSpring(response: 0.28, dampingFraction: 0.82), value: offset)
         .contentShape(Rectangle())
-
-        .gesture(
-            TapGesture()
-                .onEnded {
-                    guard isTop, !removed, abs(offset.width) < 8, abs(offset.height) < 8 else { return }
-                    onTap(item)
-                }
-        )
-        .simultaneousGesture(
-            DragGesture()
-                .updating($isDragging) { _, state, _ in
-                    guard isTop else { return }
-                    state = true
-                }
-                .onChanged { value in
-                    guard isTop, !removed else { return }
-                    offset = value.translation
-                    let crossed = abs(dragPct) > 0.55
-                    if crossed != didCrossThreshold {
-                        didCrossThreshold = crossed
-                        if crossed { Haptics.shared.light() }
-                    }
-                }
-                .onEnded { value in
-                    guard isTop, !removed else { return }
-                    let vx = value.predictedEndTranslation.width
-                    let like = dragPct > 0.6 || vx > 500
-                    let nope = dragPct < -0.6 || vx < -500
-                    if like || nope {
-                        removed = true
-                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                            offset.width = like ? 900 : -900
-                            offset.height += 20
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                            onRemove(item, like)
-                        }
-                        Haptics.shared.success()
-                    } else {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
-                            offset = .zero
-                        }
-                        didCrossThreshold = false
-                    }
-                }
-        )
-
+        .gesture(tapGesture.simultaneously(with: dragGesture))
         .overlay(overlayBadges, alignment: .topLeading)
-        .accessibilityLabel(Text("\(item.name), \(item.genres.first ?? "")"))
-        .accessibilityHint(Text("Tap for details. Swipe right to like, left to skip."))
+        .accessibilityLabel("\(item.name), \(item.genres.first ?? "")")
+        .accessibilityHint("Tap for details. Swipe right to like, left to skip.")
     }
 
+    // MARK: Gestures
+    private var tapGesture: some Gesture {
+        TapGesture().onEnded {
+            guard isTop, !removed, abs(offset.width) < 8, abs(offset.height) < 8 else { return }
+            onTap(item)
+        }
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture()
+            .updating($isDragging) { _, state, _ in if isTop { state = true } }
+            .onChanged { value in
+                guard isTop, !removed else { return }
+                offset = value.translation
+                let crossed = abs(dragPct) > 0.55
+                if crossed != didCrossThreshold {
+                    didCrossThreshold = crossed
+                    if crossed { Haptics.shared.light() }
+                }
+            }
+            .onEnded { value in
+                guard isTop, !removed else { return }
+                let vx = value.predictedEndTranslation.width
+                let like = dragPct > 0.6 || vx > 500
+                let nope = dragPct < -0.6 || vx < -500
+                if like || nope {
+                    removed = true
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                        offset.width = like ? 900 : -900
+                        offset.height += 20
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                        onRemove(item, like)
+                    }
+                    Haptics.shared.success()
+                } else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                        offset = .zero
+                    }
+                    didCrossThreshold = false
+                }
+            }
+    }
+
+    // MARK: Overlay
     @ViewBuilder
     private var overlayBadges: some View {
         HStack {
             if offset.width > 40 {
-                TagBadge(text: "LIKE", tint: .green).transition(.opacity.combined(with: .scale))
+                TagBadge(text: "LIKE", tint: .green)
             } else if offset.width < -40 {
-                TagBadge(text: "SKIP", tint: .red).transition(.opacity.combined(with: .scale))
+                TagBadge(text: "SKIP", tint: .red)
             }
             Spacer()
         }
         .padding(16)
+    }
+}
+
+// MARK: - CardStamp
+
+private struct CardStamp: View {
+    let text: String
+    let color: Color
+    var body: some View {
+        Text(text)
+            .font(.system(size: 28, weight: .heavy, design: .rounded))
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .foregroundColor(color)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(color, lineWidth: 3))
+            .rotationEffect(.degrees(-12))
+            .shadow(color: color.opacity(0.2), radius: 6, y: 3)
     }
 }
 
@@ -364,48 +403,11 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if isSignedIn {
-                DeckRootView()
-            } else {
-                SignInView()
-            }
+            if isSignedIn { DeckRootView() }
+            else { SignInView() }
         }
-        .task {
-            // Debug prints: confirm which user/env you’re running with
-            let uid = Supa.client.auth.currentUser?.id.uuidString ?? "nil"
-            print("AUTH uid:", uid)
-            print("APP env:", Constants.App.env)
-
-            // Initial session snapshot
-            isSignedIn = (Supa.client.auth.currentUser != nil)
-
-            // If already signed in at launch, do a silent liked sync
-            if isSignedIn {
-                await vm.refreshLikedFromSupabase()
-                await vm.hydrateLikedCacheFromSupabase()
-            }
-
-            // Stream auth state changes and keep UI + liked list in sync
-            authTask?.cancel()
-            authTask = Task {
-                for await (event, session) in Supa.client.auth.authStateChanges {
-                    switch event {
-                    case .initialSession, .signedIn, .tokenRefreshed, .userUpdated:
-                        isSignedIn = (session != nil)
-                        if isSignedIn {
-                            await vm.refreshLikedFromSupabase()
-                            await vm.hydrateLikedCacheFromSupabase()
-                        }
-                    case .signedOut, .userDeleted:
-                        isSignedIn = false
-                    default:
-                        break
-                    }
-                }
-            }
-        }
+        .task { await setupAuthStream() }
         .onChange(of: scenePhase) { phase in
-            // When returning to foreground, refresh liked + cache silently
             if phase == .active, isSignedIn {
                 Task {
                     await vm.refreshLikedFromSupabase()
@@ -414,5 +416,36 @@ struct ContentView: View {
             }
         }
         .onDisappear { authTask?.cancel() }
+    }
+
+    // MARK: - Auth
+    private func setupAuthStream() async {
+        let uid = Supa.client.auth.currentUser?.id.uuidString ?? "nil"
+        print("AUTH uid:", uid, "ENV:", Constants.App.env)
+
+        isSignedIn = (Supa.client.auth.currentUser != nil)
+
+        if isSignedIn {
+            await vm.refreshLikedFromSupabase()
+            await vm.hydrateLikedCacheFromSupabase()
+        }
+
+        authTask?.cancel()
+        authTask = Task {
+            for await (event, session) in Supa.client.auth.authStateChanges {
+                switch event {
+                case .initialSession, .signedIn, .tokenRefreshed, .userUpdated:
+                    isSignedIn = (session != nil)
+                    if isSignedIn {
+                        await vm.refreshLikedFromSupabase()
+                        await vm.hydrateLikedCacheFromSupabase()
+                    }
+                case .signedOut, .userDeleted:
+                    isSignedIn = false
+                default:
+                    break
+                }
+            }
+        }
     }
 }
