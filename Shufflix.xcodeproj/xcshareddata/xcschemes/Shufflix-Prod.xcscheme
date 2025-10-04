@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "AB4815962E8C1D6D0030F010"
-               BuildableName = "Shufflix.app"
+               BuildableName = "com.shufflix.app.app"
                BlueprintName = "Shufflix"
                ReferencedContainer = "container:Shufflix.xcodeproj">
             </BuildableReference>
@@ -45,7 +45,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "AB4815962E8C1D6D0030F010"
-            BuildableName = "Shufflix.app"
+            BuildableName = "com.shufflix.app.app"
             BlueprintName = "Shufflix"
             ReferencedContainer = "container:Shufflix.xcodeproj">
          </BuildableReference>
@@ -62,7 +62,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "AB4815962E8C1D6D0030F010"
-            BuildableName = "Shufflix.app"
+            BuildableName = "com.shufflix.app.app"
             BlueprintName = "Shufflix"
             ReferencedContainer = "container:Shufflix.xcodeproj">
          </BuildableReference>

@@ -3,10 +3,15 @@
 //  Shufflix
 //
 //  Created by Zach Rasmussen on 9/30/25.
-//  Production-hardened: 2025-10-03
+//  Production-hardened: 2025-10-04 (trailers temporarily disabled)
 //
 
 import SwiftUI
+
+// Local feature flags for this file only (safe to delete when centralizing)
+private enum Features {
+    static let showTrailers = false   // flip to true when you bring trailers back
+}
 
 private enum DetailUI {
     static let posterCorner: CGFloat = 18
@@ -27,13 +32,11 @@ struct TitleDetailView: View {
     // Remote bits
     @State private var cast: [TMDBService.CastMember] = []
     @State private var providersState: [ProviderLink] = []
-    @State private var trailerURL: URL?
     @State private var certification: String?
 
     // UI bits
     @State private var isLoading = true
     @State private var overviewText: String = ""
-    @State private var pageIndex: Int = 0   // 0 = poster, 1 = trailer
     @State private var expandedOverview = false
     @State private var localRating: Int = 0
 
@@ -45,14 +48,11 @@ struct TitleDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: DetailUI.sectionSpacing) {
 
-                    // MARK: Poster / Trailer
-                    PosterPager(
+                    // MARK: Poster (trailers off)
+                    PosterOnly(
                         url: item.posterURL,
-                        trailerURL: trailerURL,
-                        certification: certification,
-                        pageIndex: $pageIndex
+                        certification: certification
                     )
-                    .accessibilityAddTraits(trailerURL != nil ? [.startsMediaSession] : [])
 
                     // MARK: Stats Row
                     StatsRow(item: item)
@@ -147,9 +147,8 @@ struct TitleDetailView: View {
             await loadTask?.value
         }
         .onDisappear {
-            // Stop playback if the view leaves (saves battery & bandwidth)
+            // Stop any in-flight work if the view leaves
             loadTask?.cancel()
-            trailerURL = nil
         }
         // Keep local rating in sync if something external changes it
         .onReceive(vm.$deck) { _ in
@@ -182,12 +181,16 @@ struct TitleDetailView: View {
                 }
             }
 
-            group.addTask {
-                if self.trailerURL == nil,
-                   let vids = try? await TMDBService.fetchVideos(for: self.item.id, mediaType: self.item.mediaType),
-                   let best = TMDBService.bestTrailerURL(from: vids),
-                   !Task.isCancelled {
-                    await MainActor.run { self.trailerURL = best }
+            // TRAILER_TODO: Re-enable this block when Features.showTrailers == true
+            if Features.showTrailers {
+                group.addTask {
+                    _ = () // intentionally noop; placeholder to keep structure
+                    // Example when re-enabling:
+                    // if let vids = try? await TMDBService.fetchVideos(for: self.item.id, mediaType: self.item.mediaType),
+                    //    let best = TMDBService.bestTrailerURL(from: vids),
+                    //    !Task.isCancelled {
+                    //    await MainActor.run { self.trailerURL = best }
+                    // }
                 }
             }
 
@@ -208,84 +211,53 @@ struct TitleDetailView: View {
     }
 }
 
-// MARK: - Poster Pager
+// MARK: - Poster Only (trailers disabled)
 
-private struct PosterPager: View {
+private struct PosterOnly: View {
     let url: URL?
-    let trailerURL: URL?
     let certification: String?
-    @Binding var pageIndex: Int
 
     var body: some View {
-        TabView(selection: $pageIndex) {
-            // Poster
-            ZStack {
-                AsyncImage(url: url, transaction: .init(animation: .easeInOut(duration: 0.2))) { phase in
-                    switch phase {
-                    case .success(let img):
-                        img.resizable().scaledToFill()
-                    case .empty:
-                        Rectangle().fill(Color.secondary.opacity(0.15))
-                            .overlay(ProgressView().controlSize(.small))
-                    case .failure:
-                        Rectangle().fill(Color.secondary.opacity(0.15))
-                            .overlay(Image(systemName: "film").imageScale(.large))
-                    @unknown default:
-                        Rectangle().fill(Color.secondary.opacity(0.15))
-                    }
-                }
-                .clipped()
-
-                // Certification chip
-                if let cert = certification, !cert.isEmpty {
-                    HStack {
-                        Text(cert)
-                            .font(.footnote.weight(.semibold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.black.opacity(0.35), in: Capsule())
-                            .overlay(Capsule().stroke(Color.white.opacity(0.6), lineWidth: 1))
-                        Spacer()
-                    }
-                    .padding(.leading, 12)
-                    .padding(.bottom, 10)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                    .allowsHitTesting(false)
-                }
-
-                // Nudge
-                if trailerURL != nil {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Spacer()
-                            Text("Swipe for trailer ▶")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 10).padding(.vertical, 6)
-                                .background(.thinMaterial, in: Capsule())
-                                .padding(10)
-                        }
-                    }
-                    .transition(.opacity)
+        ZStack {
+            AsyncImage(url: url, transaction: .init(animation: .easeInOut(duration: 0.2))) { phase in
+                switch phase {
+                case .success(let img):
+                    img.resizable().scaledToFill()
+                case .empty:
+                    Rectangle().fill(Color.secondary.opacity(0.15))
+                        .overlay(ProgressView().controlSize(.small))
+                case .failure:
+                    Rectangle().fill(Color.secondary.opacity(0.15))
+                        .overlay(Image(systemName: "film").imageScale(.large))
+                @unknown default:
+                    Rectangle().fill(Color.secondary.opacity(0.15))
                 }
             }
-            .tag(0)
+            .clipped()
 
-            // Trailer
-            if let tURL = trailerURL {
-                YouTubeWebView(url: tURL)
-                    .tag(1)
+            // Certification chip
+            if let cert = certification, !cert.isEmpty {
+                HStack {
+                    Text(cert)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.black.opacity(0.35), in: Capsule())
+                        .overlay(Capsule().stroke(Color.white.opacity(0.6), lineWidth: 1))
+                    Spacer()
+                }
+                .padding(.leading, 12)
+                .padding(.bottom, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .allowsHitTesting(false)
             }
         }
         .aspectRatio(2/3, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: DetailUI.posterCorner, style: .continuous))
         .shadow(radius: 8, y: 4)
-        .tabViewStyle(.page)
-        .indexViewStyle(.page(backgroundDisplayMode: .automatic))
-        .animation(.easeInOut(duration: 0.2), value: pageIndex)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(trailerURL == nil ? "Poster" : (pageIndex == 0 ? "Poster. Swipe to trailer." : "Trailer"))
+        .accessibilityLabel("Poster")
     }
 }
 
